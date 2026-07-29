@@ -1,0 +1,13 @@
+seed: 0
+
+model:
+  base_channels: 16 # 16-32-64-128 channel progression; small on purpose for fast local iteration
+
+data:
+  image_size: 128 # must be divisible by 8 for this depth-3 UNet
+
+overfit:
+  subset_size: 4
+  epochs: 600
+  lr: 0.003
+  log_every: 50

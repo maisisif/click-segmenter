@@ -1,0 +1,7 @@
+clicks:
+  radius: 5 # pixel radius of the disk drawn for each click in the encoded channels
+  positive_interior_frac: 0.5 # positive clicks are sampled only from pixels at least this
+  # fraction of the mask's maximum boundary-distance away from the boundary
+  negative_min_distance: 5 # negative clicks must be at least this far outside the mask...
+  negative_max_distance: 40 # ...and no farther than this (keeps them "nearby", not random)
+  negative_prob: 0.5 # probability of adding a negative click alongside the mandatory positive one

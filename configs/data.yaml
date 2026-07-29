@@ -1,0 +1,5 @@
+dataset:
+  # Currently pointing at the 3-image sample bundled with the CSAILVision/ADE20K
+  # toolkit repo (cloned separately). Update this once the full dataset is
+  # downloaded — see the "Dataset" section in CLAUDE.md.
+  root: "~/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE"
