@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python scripts/visualize_sample.py --index 1 --output outputs/sample_overlay_1.png)",
+      "Bash(.venv/bin/python scripts/visualize_sample.py --index 2 --output outputs/sample_overlay_2.png)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python scripts/visualize_clicks.py --index 0)",
+      "Bash(python3 *)"
+    ]
+  }
+}

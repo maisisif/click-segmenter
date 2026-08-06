@@ -1,5 +1,11 @@
 seed: 0
 
+# "auto" picks cuda > mps > cpu depending on what's available on the machine
+# running this script. Set explicitly (e.g. "cuda") to force a device, which
+# MetaCentrum jobs should do so a misconfigured node fails loudly instead of
+# silently falling back to cpu.
+device: auto
+
 model:
   base_channels: 16 # 16-32-64-128 channel progression; small on purpose for fast local iteration
 
@@ -11,3 +17,7 @@ overfit:
   epochs: 600
   lr: 0.003
   log_every: 50
+
+checkpoint:
+  dir: outputs/checkpoints
+  save_every: 200 # epochs

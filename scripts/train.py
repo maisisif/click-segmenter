@@ -30,10 +30,24 @@ from src.training.losses import BCEDiceLoss
 from src.training.metrics import iou_score
 
 
-def get_device() -> torch.device:
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+def get_device(preference: str = "auto") -> torch.device:
+    """Resolve a device from config. "auto" picks the best available backend;
+    an explicit choice ("cuda"/"mps"/"cpu") fails loudly if unavailable, which
+    is what we want on MetaCentrum (a GPU job silently falling back to cpu
+    would waste the whole allocation without anyone noticing).
+    """
+    if preference == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+    if preference == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("device: cuda requested in config but torch.cuda.is_available() is False")
+    if preference == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("device: mps requested in config but torch.backends.mps.is_available() is False")
+    return torch.device(preference)
 
 
 def main() -> None:
@@ -42,6 +56,7 @@ def main() -> None:
     parser.add_argument("--clicks-config", default="configs/clicks.yaml")
     parser.add_argument("--train-config", default="configs/train.yaml")
     parser.add_argument("--output", default="outputs/overfit_check.png")
+    parser.add_argument("--resume", default=None, help="Path to a checkpoint (.pt) to resume training from")
     args = parser.parse_args()
 
     with open(args.data_config) as f:
@@ -52,7 +67,7 @@ def main() -> None:
         train_config = yaml.safe_load(f)
 
     torch.manual_seed(train_config["seed"])
-    device = get_device()
+    device = get_device(train_config.get("device", "auto"))
     print(f"Using device: {device}")
 
     root = Path(data_config["dataset"]["root"]).expanduser()
@@ -84,6 +99,11 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=train_config["overfit"]["lr"])
     criterion = BCEDiceLoss()
 
+    start_epoch = 1
+    if args.resume:
+        start_epoch = _load_checkpoint(args.resume, model, optimizer, device) + 1
+        print(f"Resumed from {args.resume!r} at epoch {start_epoch}")
+
     inputs, targets = next(iter(loader))
     inputs, targets = inputs.to(device), targets.to(device)
 
@@ -94,7 +114,9 @@ def main() -> None:
     model.train()
     epochs = train_config["overfit"]["epochs"]
     log_every = train_config["overfit"]["log_every"]
-    for epoch in range(1, epochs + 1):
+    checkpoint_dir = Path(train_config["checkpoint"]["dir"])
+    save_every = train_config["checkpoint"]["save_every"]
+    for epoch in range(start_epoch, epochs + 1):
         optimizer.zero_grad()
         logits = model(inputs)
         loss = criterion(logits, targets)
@@ -105,6 +127,9 @@ def main() -> None:
             iou = iou_score(logits.detach(), targets)
             print(f"epoch {epoch:4d}/{epochs}  loss={loss.item():.4f}  IoU={iou:.4f}")
 
+        if epoch % save_every == 0 or epoch == epochs:
+            _save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, loss.item())
+
     model.eval()
     with torch.no_grad():
         final_logits = model(inputs)
@@ -113,6 +138,31 @@ def main() -> None:
     print(f"Final overfit IoU on the {len(subset)}-example subset: {final_iou:.4f}")
 
     _save_comparison(inputs, targets, initial_pred, final_pred, args.output)
+
+
+def _save_checkpoint(
+    path: Path, epoch: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss: float
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss": loss,
+        },
+        path,
+    )
+
+
+def _load_checkpoint(
+    path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer, device: torch.device
+) -> int:
+    """Loads model/optimizer state in place, returns the epoch the checkpoint was saved at."""
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    return checkpoint["epoch"]
 
 
 def _save_comparison(

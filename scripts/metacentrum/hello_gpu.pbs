@@ -1,0 +1,52 @@
+#!/bin/bash
+# "Hello GPU" sanity job: confirms a GPU node, our venv, and the existing M3
+# overfit-check script (scripts/train.py) all work together on MetaCentrum,
+# before committing to a real multi-hour M4 training job on the full dataset.
+#
+# Prereq: run setup_env.sh once on a frontend first (creates the venv, clones
+# the repo). Then submit this from any frontend:
+#
+#   qsub ~/projects/click-segmenter/scripts/metacentrum/hello_gpu.pbs
+#   qstat -xu <username>          # check status
+#   cat cs-hello-gpu.o<jobID>     # inspect output once it finishes
+#
+# Resource notes (see https://docs.metacentrum.cz/en/docs/computing/gpu-comput/gpu-job):
+#   - ngpus=1 routes the job into a GPU queue automatically -- no need to name
+#     a queue explicitly.
+#   - This only touches the bundled 3-image sample, so resources are small on
+#     purpose. The real M4 job (full ~27k-image dataset) will need far more
+#     walltime/mem and should stage data through $SCRATCHDIR instead of
+#     reading from the home/NFS storage directly.
+
+#PBS -N cs-hello-gpu
+#PBS -l select=1:ncpus=2:ngpus=1:mem=8gb
+#PBS -l walltime=0:30:00
+#PBS -j oe
+
+set -euo pipefail
+
+echo "=== Host & GPU info ==="
+hostname -f
+nvidia-smi || echo "nvidia-smi not found -- unexpected on a GPU node, check queue routing"
+
+echo "=== Loading environment ==="
+module load python-modules || echo "module name may have changed -- check 'module avail python'"
+source "$HOME/venvs/click-segmenter/bin/activate"
+
+echo "=== Torch / CUDA sanity check ==="
+python -c "
+import torch
+print('torch version:', torch.__version__)
+print('cuda available:', torch.cuda.is_available())
+if torch.cuda.is_available():
+    print('device:', torch.cuda.get_device_name(0))
+"
+
+echo "=== Running M3 overfit sanity check (device: auto in configs/train.yaml -> cuda here) ==="
+cd "$HOME/projects/click-segmenter"
+python scripts/train.py --output "outputs/hello_gpu_overfit_check.png"
+
+echo "=== Checkpoint written to: ==="
+ls -la outputs/checkpoints/ || echo "no checkpoint dir found -- something's off"
+
+echo "=== Done ==="
