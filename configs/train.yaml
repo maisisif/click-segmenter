@@ -14,9 +14,23 @@ data:
 
 overfit:
   subset_size: 4
-  epochs: 600
-  lr: 0.003
-  log_every: 50
+  # lr 0.003 reached IoU ~0.90 and then destabilized deterministically around
+  # epoch 587. At 0.001 a single instance memorizes to IoU 1.0000 / loss 0.0015,
+  # which is what this sanity check is actually meant to demonstrate.
+  epochs: 2000
+  lr: 0.001
+  log_every: 100
+
+# M4: real training on the full dataset.
+training:
+  # Splits are by image, not instance, to avoid leaking scenes between sets.
+  splits: [0.7, 0.2, 0.1] # train / val / test
+  split_seed: 0
+  epochs: 40
+  batch_size: 16
+  lr: 0.001
+  num_workers: 4
+  history_path: outputs/history.json
 
 checkpoint:
   dir: outputs/checkpoints

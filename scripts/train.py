@@ -26,28 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.ade20k import discover_samples
 from src.data.dataset import ClickSegmentationDataset
 from src.model.unet import UNet
+from src.training.checkpoints import load_checkpoint, save_checkpoint
+from src.training.device import get_device
 from src.training.losses import BCEDiceLoss
 from src.training.metrics import iou_score
-
-
-def get_device(preference: str = "auto") -> torch.device:
-    """Resolve a device from config. "auto" picks the best available backend;
-    an explicit choice ("cuda"/"mps"/"cpu") fails loudly if unavailable, which
-    is what we want on MetaCentrum (a GPU job silently falling back to cpu
-    would waste the whole allocation without anyone noticing).
-    """
-    if preference == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-        return torch.device("cpu")
-
-    if preference == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("device: cuda requested in config but torch.cuda.is_available() is False")
-    if preference == "mps" and not torch.backends.mps.is_available():
-        raise RuntimeError("device: mps requested in config but torch.backends.mps.is_available() is False")
-    return torch.device(preference)
 
 
 def main() -> None:
@@ -125,7 +107,7 @@ def main() -> None:
 
     start_epoch = 1
     if args.resume:
-        start_epoch = _load_checkpoint(args.resume, model, optimizer, device) + 1
+        start_epoch = load_checkpoint(args.resume, model, optimizer, device) + 1
         print(f"Resumed from {args.resume!r} at epoch {start_epoch}")
 
     inputs, targets = next(iter(loader))
@@ -160,13 +142,13 @@ def main() -> None:
         epoch_iou = iou_score(logits.detach(), targets)
         if epoch_iou > best_iou:
             best_iou, best_epoch = epoch_iou, epoch
-            _save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, loss.item())
+            save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, loss.item())
 
         if epoch % log_every == 0 or epoch == 1:
             print(f"epoch {epoch:4d}/{epochs}  loss={loss.item():.4f}  IoU={epoch_iou:.4f}")
 
         if epoch % save_every == 0 or epoch == epochs:
-            _save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, loss.item())
+            save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, loss.item())
 
     model.eval()
     with torch.no_grad():
@@ -182,31 +164,6 @@ def main() -> None:
         )
 
     _save_comparison(inputs, targets, initial_pred, final_pred, args.output)
-
-
-def _save_checkpoint(
-    path: Path, epoch: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss: float
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "loss": loss,
-        },
-        path,
-    )
-
-
-def _load_checkpoint(
-    path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer, device: torch.device
-) -> int:
-    """Loads model/optimizer state in place, returns the epoch the checkpoint was saved at."""
-    checkpoint = torch.load(path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    return checkpoint["epoch"]
 
 
 def _save_comparison(

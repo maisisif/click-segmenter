@@ -22,41 +22,52 @@ so a scene-object-graph stage can later consume the segmentation outputs.
 - **M2 — Click simulation + input encoding** ✅ Positive clicks sampled toward
   mask interior, optional negative clicks in a band outside the boundary
   (`src/data/clicks.py`), encoded as 2 extra channels (`src/data/encoding.py`).
-- **M3 — Baseline UNet + overfit sanity check** 🔄 Depth-3 UNet (16/32/64/128)
-  trains and learns, but the overfit check plateaus at IoU ~0.90 rather than the
-  near-perfect memorization this test is supposed to demonstrate. Under
-  investigation — see "Blocked on".
-- **M4 — Full training on MetaCentrum** ⬜ Cluster-readiness work is done (lazy
-  loading, checkpoint/resume, config-driven device), but no full run yet.
-- **M5 — Evaluation (IoU/Dice/NoC) + SAM baseline comparison** ⬜
+- **M3 — Baseline UNet + overfit sanity check** ✅ Depth-3 UNet (16/32/64/128)
+  memorizes a single instance to **IoU 1.0000, loss 0.0015**, confirming the
+  data pipeline, loss and training loop are correct.
+- **M4 — Full training on MetaCentrum** 🔄 `scripts/train_full.py` is written
+  (70/20/10 splits, per-epoch validation, best-epoch selection, held-out test
+  evaluation, JSON history). Not yet run: needs the full dataset and a working
+  GPU node.
+- **M5 — Evaluation (IoU/Dice/NoC) + SAM baseline comparison** ⬜ Basic IoU is
+  in place; Dice and NoC are not.
 - **M6 — Interactive UI** ⬜
 - **M7 — Polish (README, results, demo GIF)** ⬜
 
 ## Current status
 
-The full pipeline runs end to end on MetaCentrum from a clean clone, on CPU,
-inside the OnDemand JupyterLab container. Latest verified result: on the bundled
-3-image sample (109 instances), the 4-example overfit check reaches a best
-training IoU of **0.9064 at epoch 587**, then destabilizes on the final epochs
-(loss 0.118 → 0.552) and ends at eval IoU 0.2939.
+The pipeline runs end to end on MetaCentrum from a clean clone, on CPU, inside
+the OnDemand JupyterLab container.
 
-Runs are bit-identical across repeats, so that late blow-up is deterministic
-under `seed: 0` and `lr: 0.003`, not random. Best-checkpoint tracking now saves
-`best.pt` at the peak, so a late spike no longer discards a good run.
+**M3 is resolved.** An earlier 4-instance run plateaued at IoU ~0.90 and then
+destabilized deterministically around epoch 587. That looked like a broken
+pipeline but was purely a learning rate that was too high to settle: at
+`lr: 0.001` a single instance reaches IoU 1.0000 with loss 0.0015 and no
+instability. The loss and metric code were reviewed and found correct (loss
+0.118 decomposed exactly to IoU 0.90). Config defaults are now `lr: 0.001`,
+`epochs: 2000`.
 
-No GPU run has succeeded yet. No training on the full dataset has been attempted.
+Best-checkpoint tracking was added along the way, so a late spike can no longer
+discard an otherwise good run.
+
+No GPU run has succeeded yet, and no training on the full dataset has been
+attempted.
+
+## Supervisor requirements (Kassem, 2026-08-07)
+
+Agreed direction for the deliverable, which shapes M4/M5:
+
+- Split 70/20/10 train/validation/test. Train on 70, validate on 20, pick the
+  best-performing epoch, then evaluate that epoch once on the 10% test set.
+- Report back with results and training curves.
+- Deliver as a Jupyter notebook with all plots rendered inline.
+- After the model works: save weights, build a GUI that runs inference from
+  them, then the scene-graph stage.
+- Spend time on the underlying theory, not just the code.
 
 ## Blocked on
 
-1. **M3 is not conclusively passing.** An overfit check on a handful of fixed
-   examples should reach near-zero loss and IoU ~0.97+; ours flatlines at ~0.90
-   from epoch 500 on. The loss and metric code were reviewed and are correct
-   (loss 0.118 decomposes exactly to IoU 0.90), and the overfit subset contains
-   no duplicate targets. The leading hypothesis is that `lr: 0.003` is too high
-   to settle into the minimum, supported by the deterministic divergence at
-   epoch 587. Not yet confirmed.
-
-2. **GPU node incompatibility.** The OnDemand `NGC/PyTorch:25.02-py3.SIF`
+1. **GPU node incompatibility.** The OnDemand `NGC/PyTorch:25.02-py3.SIF`
    container ships CUDA kernels for compute capability sm_75 and newer. The
    `konos` cluster is GTX 1080 Ti (sm_61), so `torch.cuda.is_available()` returns
    True but any kernel launch fails with "no kernel image is available for
@@ -65,23 +76,25 @@ No GPU run has succeeded yet. No training on the full dataset has been attempted
    `gpu_cap` field, only a PBS Queue dropdown, so how to pin the hardware is
    still open.
 
-3. **Full dataset not yet materialized.** ADE20K official registration
+2. **Full dataset not yet materialized.** ADE20K official registration
    (ade20k.csail.mit.edu) has been broken for weeks. Decision: use the Hugging
    Face mirror `1aurent/ADE20K` (full 2021 release). Its schema and ternary
-   {0, 128, 255} amodal mask encoding were verified, and `scripts/export_ade20k.py`
-   is written, but has not been run. COCO and PSG were both ruled out.
+   {0, 128, 255} amodal mask encoding were verified, and
+   `scripts/export_ade20k.py` is written, but has not been run. COCO and PSG
+   were both ruled out.
 
 ## Next steps
 
-1. Run the M3 diagnostic to test the learning-rate hypothesis:
-   `python3 scripts/train.py --subset-size 1 --epochs 2000 --lr 0.001`.
-   Expect IoU > 0.97. If a single example still caps at ~0.90, investigate the
-   click encoding and mask resizing instead.
-2. Get an OnDemand session on a GPU with compute capability >= 7.5 and rerun
-   `python3 scripts/train.py` to confirm CUDA works.
-3. Submit `scripts/metacentrum/export_data.pbs` to materialize the full dataset.
+1. Dry-run the M4 script on the 3-image sample to shake out bugs before
+   committing to a real run:
+   `python3 scripts/train_full.py --device cpu --epochs 2`
+2. Submit `scripts/metacentrum/export_data.pbs` to materialize the full dataset.
    Note `qsub` is unavailable inside the Jupyter container, so submit via the
-   OnDemand Job Composer or an SSH session to a frontend.
+   OnDemand Job Composer or an SSH session to a frontend. Also note the NGC
+   container lacks `datasets`/`pyarrow`, which the export needs.
+3. Get an OnDemand session on a GPU with compute capability >= 7.5 and confirm
+   CUDA works.
+4. Run full training, then build the notebook with curves and results.
 
 ## Environment notes
 
@@ -89,30 +102,40 @@ No GPU run has succeeded yet. No training on the full dataset has been attempted
 toolkit (with 3-image sample) at `~/projects/ade20k-reference`.
 
 **MetaCentrum:** home directory is shared across nodes, so files persist between
-sessions and clusters. Same layout as local: `~/projects/click-segmenter` and
-`~/projects/ade20k-reference`.
+sessions and clusters. Same layout as local.
 
 Access is via OnDemand → Interactive Apps → Jupyter Notebook/Lab, image
 `NGC/PyTorch:25.02-py3.SIF`. That container already provides torch 2.7.0a0 with
 CUDA, numpy, pillow, matplotlib, pyyaml and scipy, so **no pip installs or venv
-are needed**. `git` is available inside it; `qsub` and `module` are not.
+are needed** for training. `git` is available inside it; `qsub` and `module` are
+not.
 
 `scripts/metacentrum/setup_env.sh` builds a module-based venv instead, and is
 only relevant for plain SSH sessions on a frontend, not the container workflow.
 
-**Configs** (`configs/`): `data.yaml` (dataset root path), `clicks.yaml` (click
-simulation parameters), `train.yaml` (seed, device, model width, image size,
-overfit settings, checkpoint dir/frequency).
+**Configs** (`configs/`): `data.yaml` (dataset root), `clicks.yaml` (click
+simulation), `train.yaml` (seed, device, model width, image size, `overfit`
+settings for M3, `training` settings for M4, checkpoint dir/frequency).
 
-`train.yaml` is the canonical setting; `scripts/train.py` accepts `--device`,
-`--subset-size`, `--epochs` and `--lr` overrides for one-off experiments, plus
-`--resume <checkpoint>`. `device: auto` picks cuda > mps > cpu; naming a device
-explicitly makes it fail loudly if unavailable, which is what a cluster job
-wants.
+**Entry points:**
 
-**Checkpoints:** `outputs/checkpoints/best.pt` (highest training IoU) and
-`latest.pt` (periodic, by `checkpoint.save_every`). Prefer `best.pt`.
+- `scripts/train.py` — M3 overfit sanity check only. Accepts `--device`,
+  `--subset-size`, `--epochs`, `--lr`, `--resume`.
+- `scripts/train_full.py` — M4 real training. Accepts `--device`, `--epochs`,
+  `--batch-size`, `--lr`, `--resume`, `--skip-test`.
+- `scripts/export_ade20k.py` — HF mirror to on-disk layout.
 
-**Data export:** `scripts/export_ade20k.py` pulls from the HF mirror and writes
-the original toolkit folder layout, so `src/data/ade20k.py` needs no changes.
-Requires `datasets` and `pyarrow`, which the NGC container does not include.
+`device: auto` picks cuda > mps > cpu; naming a device explicitly makes it fail
+loudly if unavailable, which is what a cluster job wants.
+
+**Splits:** `src/data/splits.py` splits by **image**, never by instance, since
+instances from one image appearing in both train and val would leak memorized
+scenes into validation. Deterministic from the sorted paths plus `split_seed`,
+so no split file needs to be stored.
+
+**Checkpoints:** `outputs/checkpoints/best.pt` (best validation IoU in M4, best
+training IoU in M3) and `latest.pt`. Prefer `best.pt`.
+
+**History:** `scripts/train_full.py` writes per-epoch metrics to
+`outputs/history.json` every epoch, so a job killed by walltime still leaves
+plottable curves.
