@@ -57,6 +57,12 @@ def main() -> None:
     parser.add_argument("--train-config", default="configs/train.yaml")
     parser.add_argument("--output", default="outputs/overfit_check.png")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint (.pt) to resume training from")
+    parser.add_argument(
+        "--device",
+        default=None,
+        choices=["auto", "cuda", "mps", "cpu"],
+        help="Override the device set in the train config (useful for a quick CPU check on an incompatible GPU node)",
+    )
     args = parser.parse_args()
 
     with open(args.data_config) as f:
@@ -67,7 +73,7 @@ def main() -> None:
         train_config = yaml.safe_load(f)
 
     torch.manual_seed(train_config["seed"])
-    device = get_device(train_config.get("device", "auto"))
+    device = get_device(args.device or train_config.get("device", "auto"))
     print(f"Using device: {device}")
 
     root = Path(data_config["dataset"]["root"]).expanduser()
@@ -116,6 +122,16 @@ def main() -> None:
     log_every = train_config["overfit"]["log_every"]
     checkpoint_dir = Path(train_config["checkpoint"]["dir"])
     save_every = train_config["checkpoint"]["save_every"]
+
+    # Track the best weights separately from the latest. Adam at this lr
+    # occasionally destabilizes for an epoch or two, and BatchNorm makes the
+    # damage worse than it looks: a spike pollutes the running statistics, so
+    # eval-mode output degrades even further than the training loss suggests.
+    # Without this, a spike on the final epoch throws away an otherwise good
+    # run — cheap here, very expensive on a multi-hour M4 job.
+    best_iou = float("-inf")
+    best_epoch = 0
+
     for epoch in range(start_epoch, epochs + 1):
         optimizer.zero_grad()
         logits = model(inputs)
@@ -123,9 +139,13 @@ def main() -> None:
         loss.backward()
         optimizer.step()
 
+        epoch_iou = iou_score(logits.detach(), targets)
+        if epoch_iou > best_iou:
+            best_iou, best_epoch = epoch_iou, epoch
+            _save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, loss.item())
+
         if epoch % log_every == 0 or epoch == 1:
-            iou = iou_score(logits.detach(), targets)
-            print(f"epoch {epoch:4d}/{epochs}  loss={loss.item():.4f}  IoU={iou:.4f}")
+            print(f"epoch {epoch:4d}/{epochs}  loss={loss.item():.4f}  IoU={epoch_iou:.4f}")
 
         if epoch % save_every == 0 or epoch == epochs:
             _save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, loss.item())
@@ -136,6 +156,12 @@ def main() -> None:
         final_pred = torch.sigmoid(final_logits)
     final_iou = iou_score(final_logits, targets)
     print(f"Final overfit IoU on the {len(subset)}-example subset: {final_iou:.4f}")
+    print(f"Best training IoU: {best_iou:.4f} (epoch {best_epoch}, saved to {checkpoint_dir / 'best.pt'})")
+    if final_iou < best_iou - 0.05:
+        print(
+            "NOTE: final IoU is well below the best seen — training likely spiked late. "
+            "Use best.pt rather than latest.pt, and consider lowering the learning rate."
+        )
 
     _save_comparison(inputs, targets, initial_pred, final_pred, args.output)
 
