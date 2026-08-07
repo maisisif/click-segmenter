@@ -69,7 +69,13 @@ def main() -> None:
     for click in clicks:
         print(f"  {'positive' if click.positive else 'negative'} click at (y={click.y}, x={click.x})")
 
-    encoded = encode_clicks(clicks, shape=sample.image.shape[:2], radius=clicks_config["radius"])
+    encoded = encode_clicks(
+        clicks,
+        shape=sample.image.shape[:2],
+        radius=clicks_config.get("radius", 5),
+        encoding=clicks_config.get("encoding", "disk"),
+        max_distance=clicks_config.get("max_distance", 64.0),
+    )
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 

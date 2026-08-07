@@ -1,5 +1,11 @@
 clicks:
-  radius: 5 # pixel radius of the disk drawn for each click in the encoded channels
+  # How clicks become input channels. "disk" stamps a small binary disk;
+  # "distance" fills every pixel with its proximity to the nearest click, so the
+  # click signal reaches the whole image instead of only the receptive field
+  # around it. See src/data/encoding.py for why that matters on large objects.
+  encoding: disk
+  radius: 5 # "disk" only: pixel radius of the disk drawn for each click
+  max_distance: 64 # "distance" only: proximity falls to 0 this many pixels from a click
   positive_interior_frac: 0.5 # positive clicks are sampled only from pixels at least this
   # fraction of the mask's maximum boundary-distance away from the boundary
   negative_min_distance: 5 # negative clicks must be at least this far outside the mask...

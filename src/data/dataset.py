@@ -124,9 +124,18 @@ class ClickSegmentationDataset(Dataset):
         # sampled each epoch — acting as a natural form of augmentation.
         rng = np.random.default_rng(idx if self.deterministic else None)
 
-        simulate_kwargs = {k: v for k, v in self.click_config.items() if k != "radius"}
+        # Split the click config: sampling parameters go to simulate_clicks,
+        # rendering parameters go to encode_clicks.
+        encoding_keys = {"encoding", "radius", "max_distance"}
+        simulate_kwargs = {k: v for k, v in self.click_config.items() if k not in encoding_keys}
         clicks = simulate_clicks(mask, rng, **simulate_kwargs)
-        encoded = encode_clicks(clicks, shape=mask.shape, radius=self.click_config["radius"])
+        encoded = encode_clicks(
+            clicks,
+            shape=mask.shape,
+            radius=self.click_config.get("radius", 5),
+            encoding=self.click_config.get("encoding", "disk"),
+            max_distance=self.click_config.get("max_distance", 64.0),
+        )
 
         image_chw = image.astype(np.float32).transpose(2, 0, 1) / 255.0
         input_array = np.concatenate([image_chw, encoded], axis=0)
