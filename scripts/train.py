@@ -63,6 +63,12 @@ def main() -> None:
         choices=["auto", "cuda", "mps", "cpu"],
         help="Override the device set in the train config (useful for a quick CPU check on an incompatible GPU node)",
     )
+    # Overrides for the overfit settings, so diagnostic runs don't require
+    # editing (and then remembering to revert) configs/train.yaml. The config
+    # stays the canonical M3 setting; these are for one-off experiments.
+    parser.add_argument("--subset-size", type=int, default=None, help="Override overfit.subset_size")
+    parser.add_argument("--epochs", type=int, default=None, help="Override overfit.epochs")
+    parser.add_argument("--lr", type=float, default=None, help="Override overfit.lr")
     args = parser.parse_args()
 
     with open(args.data_config) as f:
@@ -72,9 +78,21 @@ def main() -> None:
     with open(args.train_config) as f:
         train_config = yaml.safe_load(f)
 
+    overfit_config = train_config["overfit"]
+    if args.subset_size is not None:
+        overfit_config["subset_size"] = args.subset_size
+    if args.epochs is not None:
+        overfit_config["epochs"] = args.epochs
+    if args.lr is not None:
+        overfit_config["lr"] = args.lr
+
     torch.manual_seed(train_config["seed"])
     device = get_device(args.device or train_config.get("device", "auto"))
     print(f"Using device: {device}")
+    print(
+        f"Overfit settings: subset_size={overfit_config['subset_size']} "
+        f"epochs={overfit_config['epochs']} lr={overfit_config['lr']}"
+    )
 
     root = Path(data_config["dataset"]["root"]).expanduser()
     image_paths = discover_samples(root)
@@ -91,7 +109,7 @@ def main() -> None:
     # objects (a few pixels wide at 128x128) make the sanity check itself slow
     # and noisy without indicating anything wrong with the pipeline. Real
     # training (M4) must not cherry-pick like this.
-    subset_size = train_config["overfit"]["subset_size"]
+    subset_size = overfit_config["subset_size"]
     largest_indices = sorted(range(len(dataset)), key=lambda i: dataset.mask_areas[i], reverse=True)
     subset_indices = largest_indices[:subset_size]
     for i in subset_indices:
@@ -102,7 +120,7 @@ def main() -> None:
     loader = DataLoader(subset, batch_size=len(subset), shuffle=False)
 
     model = UNet(in_channels=5, out_channels=1, base_channels=train_config["model"]["base_channels"]).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_config["overfit"]["lr"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=overfit_config["lr"])
     criterion = BCEDiceLoss()
 
     start_epoch = 1
@@ -118,8 +136,8 @@ def main() -> None:
         initial_pred = torch.sigmoid(model(inputs))
 
     model.train()
-    epochs = train_config["overfit"]["epochs"]
-    log_every = train_config["overfit"]["log_every"]
+    epochs = overfit_config["epochs"]
+    log_every = overfit_config["log_every"]
     checkpoint_dir = Path(train_config["checkpoint"]["dir"])
     save_every = train_config["checkpoint"]["save_every"]
 
