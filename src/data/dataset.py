@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -24,18 +25,61 @@ def _resize_mask(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return np.array(resized) > 127
 
 
-def _discover_instance_ids(image_path: Path) -> list[int]:
-    """Read just the (small) sidecar JSON to list top-level instance ids for an
-    image, without decoding the image or any mask PNGs. Mirrors the part_level
-    filtering in `load_sample`, so lazy mode enumerates the same items eager
-    mode would.
+def _index_cache_key(image_paths: list[Path], image_size: int) -> str:
+    """Fingerprint of the exact inputs a cached index is valid for."""
+    digest = hashlib.sha256()
+    digest.update(str(image_size).encode())
+    for path in sorted(image_paths):
+        digest.update(str(path).encode())
+    return digest.hexdigest()
+
+
+def _build_valid_index(
+    image_paths: list[Path], image_size: tuple[int, int], cache_path: Path | None
+) -> list[tuple[Path, int]]:
+    """List every (image, instance) pair whose mask survives downsizing.
+
+    An instance whose mask is empty at `image_size` can't have a click
+    simulated on it, so it must be excluded rather than skipped at access
+    time. Determining this requires actually decoding the masks, which is
+    slow enough (tens of thousands of small PNGs on shared storage) that the
+    result is cached and keyed by the input paths and image size.
     """
-    json_path = image_path.parent / f"{image_path.stem}.json"
-    if not json_path.exists():
-        return []
-    with open(json_path) as f:
-        annotated_objects = json.load(f)["annotation"]["object"]
-    return [int(obj["id"]) for obj in annotated_objects if int(obj["parts"]["part_level"]) == 0]
+    key = _index_cache_key(image_paths, image_size[0])
+
+    if cache_path is not None and cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                cached = json.load(f)
+            if cached.get("key") == key:
+                print(f"Using cached instance index ({len(cached['items'])} instances) from {cache_path}")
+                return [(Path(p), int(i)) for p, i in cached["items"]]
+            print("Instance index cache is stale (inputs changed), rebuilding")
+        except (json.JSONDecodeError, KeyError, TypeError):
+            print("Instance index cache is unreadable, rebuilding")
+
+    print(f"Building instance index over {len(image_paths)} images (one-off, then cached)...")
+    items: list[tuple[Path, int]] = []
+    dropped = 0
+    for n, path in enumerate(image_paths, 1):
+        sample = load_sample(path)
+        for instance in sample.instances:
+            if _resize_mask(instance.mask_visible, image_size).any():
+                items.append((path, instance.id))
+            else:
+                dropped += 1
+        if n % 500 == 0:
+            print(f"  indexed {n}/{len(image_paths)} images, {len(items)} instances kept")
+
+    print(f"Instance index built: {len(items)} usable, {dropped} dropped as empty at {image_size[0]}px")
+
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump({"key": key, "items": [[str(p), i] for p, i in items]}, f)
+        print(f"Cached instance index to {cache_path}")
+
+    return items
 
 
 class ClickSegmentationDataset(Dataset):
@@ -62,6 +106,7 @@ class ClickSegmentationDataset(Dataset):
         click_config: dict,
         deterministic: bool = False,
         lazy: bool = False,
+        index_cache: Path | None = None,
     ) -> None:
         self.image_size = (image_size, image_size)
         self.click_config = click_config
@@ -70,9 +115,7 @@ class ClickSegmentationDataset(Dataset):
 
         if lazy:
             self.mask_areas = None
-            self._lazy_items: list[tuple[Path, int]] = [
-                (path, instance_id) for path in image_paths for instance_id in _discover_instance_ids(path)
-            ]
+            self._lazy_items = _build_valid_index(image_paths, self.image_size, index_cache)
         else:
             self.items: list[tuple[Sample, Instance]] = []
             self.mask_areas: list[int] = []
@@ -102,21 +145,9 @@ class ClickSegmentationDataset(Dataset):
         return image, mask
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        # In lazy mode, downsizing to image_size can occasionally empty out a
-        # thin/tiny instance (the eager path filters these out up front — see
-        # class docstring). Retry a handful of nearby indices rather than
-        # crashing mid-epoch on a rare edge case.
-        max_attempts = 5
-        for attempt in range(max_attempts):
-            candidate_idx = (idx + attempt) % len(self)
-            image, mask = self._load_image_and_mask(candidate_idx)
-            if mask.any():
-                idx = candidate_idx
-                break
-        else:
-            raise RuntimeError(
-                f"Could not find a non-empty mask near index {idx} after {max_attempts} attempts"
-            )
+        # Both modes guarantee every indexed instance has a non-empty mask at
+        # image_size, so no retry logic is needed here.
+        image, mask = self._load_image_and_mask(idx)
 
         # Deterministic mode fixes the click (via the item index as seed) so the
         # overfit sanity check tests pure memorization of a fixed input->output

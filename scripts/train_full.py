@@ -51,6 +51,7 @@ def build_loader(
     *,
     shuffle: bool,
     deterministic: bool,
+    split_name: str,
 ) -> DataLoader:
     dataset = ClickSegmentationDataset(
         image_paths,
@@ -58,6 +59,7 @@ def build_loader(
         click_config=click_config,
         deterministic=deterministic,
         lazy=True,  # the full dataset can't be held in memory
+        index_cache=Path("outputs") / f"instance_index_{split_name}.json",
     )
     return DataLoader(
         dataset,
@@ -173,8 +175,8 @@ def main() -> None:
 
     # Validation and test use fixed clicks so their curves reflect the model,
     # not the click sampler. Training resamples every epoch as augmentation.
-    train_loader = build_loader(splits["train"], train_config, click_config, shuffle=True, deterministic=False)
-    val_loader = build_loader(splits["val"], train_config, click_config, shuffle=False, deterministic=True)
+    train_loader = build_loader(splits["train"], train_config, click_config, shuffle=True, deterministic=False, split_name="train")
+    val_loader = build_loader(splits["val"], train_config, click_config, shuffle=False, deterministic=True, split_name="val")
     print(
         f"Instances -> train: {len(train_loader.dataset)}  "
         f"val: {len(val_loader.dataset)}  (test built later)"
@@ -241,7 +243,7 @@ def main() -> None:
     # the *last* epoch's weights would be reporting a model we never selected.
     print("Evaluating best checkpoint on the held-out test split...")
     load_checkpoint(str(checkpoint_dir / "best.pt"), model, optimizer, device)
-    test_loader = build_loader(splits["test"], train_config, click_config, shuffle=False, deterministic=True)
+    test_loader = build_loader(splits["test"], train_config, click_config, shuffle=False, deterministic=True, split_name="test")
     test_loss, test_iou = run_epoch(model, test_loader, criterion, device)
     print(f"Test loss={test_loss:.4f}  Test IoU={test_iou:.4f}  ({len(test_loader.dataset)} instances)")
 
