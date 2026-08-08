@@ -147,6 +147,15 @@ def main() -> None:
     root = Path(data_config["dataset"]["root"]).expanduser()
     image_paths = discover_samples(root)
     print(f"Found {len(image_paths)} images under {root}")
+    if not image_paths:
+        raise SystemExit(
+            f"No images found under {root}.\n"
+            f"  HOME is currently {Path.home()}.\n"
+            "  On MetaCentrum, $HOME differs between nodes, so a '~' in "
+            "configs/data.yaml can resolve to the wrong storage. Batch jobs "
+            "should set HOME explicitly (see scripts/metacentrum/train.pbs) or "
+            "use an absolute /storage/... path."
+        )
 
     splits = split_image_paths(
         image_paths,

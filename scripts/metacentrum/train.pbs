@@ -45,9 +45,16 @@ mkdir -p "$(dirname "$LIVE_LOG")"
 echo "Live log: $LIVE_LOG"
 
 echo "=== Training ==="
+# Force HOME inside the container. configs/data.yaml refers to the dataset as
+# "~/projects/ade20k-reference/...", and Python's expanduser() follows $HOME --
+# which on a node in another data centre points at a different storage entirely
+# (a run here found 0 images under /storage/praha2-natur/...). Setting HOME
+# explicitly keeps the config portable for local development while making it
+# resolve correctly in a batch job.
 singularity exec --nv \
     --bind "$HOME_DIR:$HOME_DIR" \
     --bind "$SCRATCHDIR:$SCRATCHDIR" \
+    --env HOME="$HOME_DIR" \
     "$IMAGE" bash -c "
 set -euo pipefail
 cd '$REPO'
