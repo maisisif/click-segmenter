@@ -1,0 +1,57 @@
+#!/bin/bash
+# M4: full training run on a GPU node, as a BATCH job.
+#
+# Deliberately not interactive. A real training run takes hours, and an
+# interactive job dies the moment the browser tab reloads or the connection
+# drops. Batch jobs survive all of that and write their output to a file.
+#
+# Submit from a frontend (e.g. skirit):
+#     qsub ~/projects/click-segmenter/scripts/metacentrum/train.pbs
+#     qstat -u $USER
+#     tail -f ~/projects/click-segmenter/cs-train.o<jobid>     # watch live
+#
+# gpu_cap=compute_75 is essential: the NGC container ships CUDA kernels only
+# for sm_75 and newer, so an older card (konos, grimbold) would pass
+# torch.cuda.is_available() and then die at the first kernel launch.
+
+#PBS -N cs-train
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb:scratch_local=50gb:gpu_cap=compute_75
+#PBS -l walltime=12:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+# $HOME is not stable across MetaCentrum nodes -- always use an absolute
+# storage path in batch jobs. See export_data.pbs for the incident that
+# prompted this.
+HOME_DIR="/storage/brno2/home/$USER"
+REPO="$HOME_DIR/projects/click-segmenter"
+IMAGE="/cvmfs/singularity.metacentrum.cz/NGC/PyTorch:25.02-py3.SIF"
+
+# Set RESUME to a checkpoint path to continue an interrupted run, e.g.
+#   RESUME="$REPO/outputs/checkpoints/latest.pt"
+RESUME=""
+
+echo "=== Node ==="
+hostname -f
+nvidia-smi
+ls -d "$REPO" || { echo "FATAL: repo not found at $REPO"; exit 1; }
+
+echo "=== Training ==="
+singularity exec --nv \
+    --bind "$HOME_DIR:$HOME_DIR" \
+    --bind "$SCRATCHDIR:$SCRATCHDIR" \
+    "$IMAGE" bash -c "
+set -euo pipefail
+cd '$REPO'
+python3 -c 'import torch; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())'
+python3 scripts/train_full.py ${RESUME:+--resume '$RESUME'}
+"
+
+echo "=== Results ==="
+echo "history:     $REPO/outputs/history.json"
+echo "checkpoints: $REPO/outputs/checkpoints/"
+ls -la "$REPO/outputs/checkpoints/" || true
+
+clean_scratch
+echo "=== Done ==="
