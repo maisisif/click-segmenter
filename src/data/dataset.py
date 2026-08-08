@@ -11,7 +11,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.data.ade20k import Instance, Sample, load_sample
+from src.data.ade20k import Instance, Sample, load_instance, load_sample
 from src.data.clicks import simulate_clicks
 from src.data.encoding import encode_clicks
 
@@ -135,14 +135,13 @@ class ClickSegmentationDataset(Dataset):
     def _load_image_and_mask(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         if self.lazy:
             path, instance_id = self._lazy_items[idx]
-            sample = load_sample(path)  # loads only this one image + its masks
-            instance = next(i for i in sample.instances if i.id == instance_id)
+            # Decode only the one mask we need, not all ~20 for this image.
+            raw_image, raw_mask = load_instance(path, instance_id)
         else:
             sample, instance = self.items[idx]
+            raw_image, raw_mask = sample.image, instance.mask_visible
 
-        image = _resize_image(sample.image, self.image_size)
-        mask = _resize_mask(instance.mask_visible, self.image_size)
-        return image, mask
+        return _resize_image(raw_image, self.image_size), _resize_mask(raw_mask, self.image_size)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         # Both modes guarantee every indexed instance has a non-empty mask at

@@ -43,6 +43,22 @@ def _load_instance_mask(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return arr == 255, arr >= 128
 
 
+def load_instance(image_path: Path, instance_id: int) -> tuple[np.ndarray, np.ndarray]:
+    """Load the image plus a single instance's visible mask, decoding nothing else.
+
+    `load_sample` decodes every instance mask for an image, which is what the
+    visualisation scripts and the index builder want. It is the wrong tool for
+    the training loop: an ADE20K image carries ~20 instances and each dataset
+    item needs exactly one, so using load_sample there does roughly 20x the
+    necessary PNG decoding and makes the dataloader the bottleneck.
+    """
+    stem = image_path.stem
+    image = np.array(Image.open(image_path).convert("RGB"))
+    mask_path = image_path.parent / stem / f"instance_{instance_id:03d}_{stem}.png"
+    mask_visible, _ = _load_instance_mask(mask_path)
+    return image, mask_visible
+
+
 def load_sample(image_path: Path) -> Sample:
     stem = image_path.stem
     parent = image_path.parent
