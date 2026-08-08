@@ -37,6 +37,13 @@ hostname -f
 nvidia-smi
 ls -d "$REPO" || { echo "FATAL: repo not found at $REPO"; exit 1; }
 
+# PBS only copies its own .o file back when the job ends, which is useless for
+# watching a 12-hour run. Tee everything into the repo as well so progress can
+# be followed live with: tail -f ~/projects/click-segmenter/outputs/train.log
+LIVE_LOG="$REPO/outputs/train.log"
+mkdir -p "$(dirname "$LIVE_LOG")"
+echo "Live log: $LIVE_LOG"
+
 echo "=== Training ==="
 singularity exec --nv \
     --bind "$HOME_DIR:$HOME_DIR" \
@@ -45,8 +52,8 @@ singularity exec --nv \
 set -euo pipefail
 cd '$REPO'
 python3 -c 'import torch; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())'
-python3 scripts/train_full.py ${RESUME:+--resume '$RESUME'}
-"
+python3 -u scripts/train_full.py ${RESUME:+--resume '$RESUME'}
+" 2>&1 | tee "$LIVE_LOG"
 
 echo "=== Results ==="
 echo "history:     $REPO/outputs/history.json"
