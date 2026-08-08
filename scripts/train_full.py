@@ -111,6 +111,12 @@ def run_epoch(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        help="Override dataset.root. Use an absolute /storage/... path in batch jobs, "
+        "where a '~' in the config resolves against the wrong node's HOME.",
+    )
     parser.add_argument("--clicks-config", default="configs/clicks.yaml")
     parser.add_argument("--train-config", default="configs/train.yaml")
     parser.add_argument("--device", default=None, choices=["auto", "cuda", "mps", "cpu"])
@@ -144,7 +150,7 @@ def main() -> None:
     device = get_device(args.device or train_config.get("device", "auto"))
     print(f"Using device: {device}")
 
-    root = Path(data_config["dataset"]["root"]).expanduser()
+    root = Path(args.data_root or data_config["dataset"]["root"]).expanduser()
     image_paths = discover_samples(root)
     print(f"Found {len(image_paths)} images under {root}")
     if not image_paths:

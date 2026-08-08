@@ -35,6 +35,7 @@ from src.training.metrics import iou_score
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-config", default="configs/data.yaml")
+    parser.add_argument("--data-root", default=None, help="Override dataset.root (see train_full.py)")
     parser.add_argument("--clicks-config", default="configs/clicks.yaml")
     parser.add_argument("--train-config", default="configs/train.yaml")
     parser.add_argument("--output", default="outputs/overfit_check.png")
@@ -81,7 +82,7 @@ def main() -> None:
         f"base_channels={train_config['model']['base_channels']}"
     )
 
-    root = Path(data_config["dataset"]["root"]).expanduser()
+    root = Path(args.data_root or data_config["dataset"]["root"]).expanduser()
     image_paths = discover_samples(root)
     dataset = ClickSegmentationDataset(
         image_paths,
