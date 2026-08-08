@@ -66,18 +66,25 @@ def _export_row(row: dict, output_root: Path) -> None:
     row["segmentations"][0].convert("RGB").save(out_dir / f"{stem}_seg.png", "PNG")
 
     objects = row["objects"]
-    annotation_objects = [
-        {
-            "id": int(obj["id"]),
-            "name": obj["name"],
-            "parts": {
-                "part_level": int(obj["parts"]["part_level"]),
-                "is_part_of": int(obj["parts"]["is_part_of"]),
-                "has_parts": list(obj["parts"]["has_parts"]),
-            },
-        }
-        for obj in objects
-    ]
+    # Several of these fields are nullable in the mirror: a top-level object
+    # has no parent, so `is_part_of` is None, and objects without sub-parts
+    # have `has_parts` as None. Only `part_level` is actually read back by
+    # src/data/ade20k.py; the rest are kept for reference and must not crash
+    # the export.
+    annotation_objects = []
+    for obj in objects:
+        parts = obj.get("parts") or {}
+        annotation_objects.append(
+            {
+                "id": int(obj["id"]),
+                "name": obj["name"],
+                "parts": {
+                    "part_level": int(parts.get("part_level") or 0),
+                    "is_part_of": int(parts["is_part_of"]) if parts.get("is_part_of") is not None else None,
+                    "has_parts": list(parts.get("has_parts") or []),
+                },
+            }
+        )
     with open(out_dir / f"{stem}.json", "w") as f:
         json.dump({"annotation": {"object": annotation_objects}}, f)
 
@@ -110,17 +117,30 @@ def main() -> None:
     dataset = load_dataset(args.dataset, split=args.split, streaming=not args.no_streaming)
 
     exported = 0
+    failed = 0
     for i, row in enumerate(dataset):
         if i < args.start:
             continue
         if args.limit is not None and exported >= args.limit:
             break
-        _export_row(row, output_root)
-        exported += 1
+
+        # One malformed row out of 25k must not abort a multi-hour export.
+        # Log it, skip it, keep going -- a handful of missing images is far
+        # cheaper than losing the whole run.
+        try:
+            _export_row(row, output_root)
+            exported += 1
+        except Exception as exc:  # noqa: BLE001 - deliberately broad
+            failed += 1
+            print(f"  SKIPPED {row.get('filename', f'row {i}')}: {type(exc).__name__}: {exc}")
+            if failed > max(20, i // 10):
+                raise RuntimeError(f"aborting: {failed} failures, something is systematically wrong") from exc
+            continue
+
         if exported % 100 == 0 or exported == 1:
             print(f"exported {exported} rows (last: {row['filename']})")
 
-    print(f"Done. Exported {exported} rows from split={args.split!r} to {output_root}")
+    print(f"Done. Exported {exported} rows from split={args.split!r} to {output_root} ({failed} skipped)")
 
 
 if __name__ == "__main__":
