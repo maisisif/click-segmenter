@@ -30,53 +30,55 @@ set -euo pipefail
 LIMIT_TRAIN=3000
 LIMIT_VAL=600
 
-VENV="$HOME/venvs/ade20k-export"
-OUTPUT_ROOT="$HOME/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE"
+# $HOME is NOT stable across MetaCentrum nodes -- you have a home directory on
+# several storages, and which one $HOME points at depends on where the job
+# lands. A first attempt failed because the job ran on an elixir node where
+# $HOME resolved to /storage/praha5-elixir/... instead of brno2. Always use an
+# absolute storage path in batch jobs.
+HOME_DIR="/storage/brno2/home/$USER"
+REPO="$HOME_DIR/projects/click-segmenter"
+OUTPUT_ROOT="$HOME_DIR/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE"
+
+# The NGC container already ships a working Python. Using it avoids both the
+# missing `python-modules` modulefile and the system Python's missing ensurepip.
+IMAGE="/cvmfs/singularity.metacentrum.cz/NGC/PyTorch:25.02-py3.SIF"
 
 echo "=== Node ==="
 hostname -f
 df -h "$SCRATCHDIR" | tail -1
+ls -d "$REPO" || { echo "FATAL: repo not found at $REPO"; exit 1; }
 
-# Keep the Hugging Face cache on fast node-local scratch rather than the shared
-# home filesystem. The parquet shards total ~6GB and would otherwise land in
-# ~/.cache and count against your home quota.
+# Keep the Hugging Face cache and the pip install on node-local scratch rather
+# than the shared home filesystem: the parquet shards total ~6GB.
 export HF_HOME="$SCRATCHDIR/hf-cache"
-mkdir -p "$HF_HOME"
+export PYTHONUSERBASE="$SCRATCHDIR/pylibs"
+mkdir -p "$HF_HOME" "$PYTHONUSERBASE"
 
-echo "=== Environment ==="
-module load python-modules || echo "module name may have changed -- check 'module avail python'"
+echo "=== Running export inside $IMAGE ==="
+singularity exec \
+    --bind "$HOME_DIR:$HOME_DIR" \
+    --bind "$SCRATCHDIR:$SCRATCHDIR" \
+    --env HF_HOME="$HF_HOME" \
+    --env PYTHONUSERBASE="$PYTHONUSERBASE" \
+    "$IMAGE" bash -c "
+set -euo pipefail
+cd '$REPO'
 
-if [ ! -d "$VENV" ]; then
-    echo "Creating venv at $VENV"
-    python3 -m venv "$VENV"
-    "$VENV/bin/pip" install --upgrade pip
-    # Deliberately not installing torch: the export is pure data wrangling.
-    "$VENV/bin/pip" install datasets pyarrow pillow numpy
-else
-    echo "Reusing existing venv at $VENV"
-fi
-source "$VENV/bin/activate"
+echo '--- installing export deps (datasets, pyarrow) ---'
+pip install --user --quiet datasets pyarrow
 
-cd "$HOME/projects/click-segmenter"
+echo '--- exporting train split (limit: ${LIMIT_TRAIN:-all}) ---'
+python3 scripts/export_ade20k.py --split train --output-root '$OUTPUT_ROOT' \
+    ${LIMIT_TRAIN:+--limit $LIMIT_TRAIN}
 
-echo "=== Quota before ==="
-# The export writes one directory and many small PNGs per image. Exporting the
-# full dataset means ~700k files, which can hit an inode quota long before a
-# size quota. Check both if this job fails with "disk quota exceeded".
-quota -s 2>/dev/null || echo "(quota command unavailable, skipping)"
-
-echo "=== Exporting train split (limit: ${LIMIT_TRAIN:-all}) ==="
-python scripts/export_ade20k.py --split train --output-root "$OUTPUT_ROOT" \
-    ${LIMIT_TRAIN:+--limit "$LIMIT_TRAIN"}
-
-echo "=== Exporting validation split (limit: ${LIMIT_VAL:-all}) ==="
-python scripts/export_ade20k.py --split validation --output-root "$OUTPUT_ROOT" \
-    ${LIMIT_VAL:+--limit "$LIMIT_VAL"}
+echo '--- exporting validation split (limit: ${LIMIT_VAL:-all}) ---'
+python3 scripts/export_ade20k.py --split validation --output-root '$OUTPUT_ROOT' \
+    ${LIMIT_VAL:+--limit $LIMIT_VAL}
+"
 
 echo "=== Result ==="
 echo "images exported: $(find "$OUTPUT_ROOT" -name '*.jpg' | wc -l)"
 echo "instance masks:  $(find "$OUTPUT_ROOT" -name 'instance_*.png' | wc -l)"
-quota -s 2>/dev/null || true
 
 clean_scratch
 echo "=== Done ==="
