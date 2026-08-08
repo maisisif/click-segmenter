@@ -117,6 +117,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=None, help="Override training.epochs")
     parser.add_argument("--batch-size", type=int, default=None, help="Override training.batch_size")
     parser.add_argument("--lr", type=float, default=None, help="Override training.lr")
+    parser.add_argument("--base-channels", type=int, default=None, help="Override model.base_channels")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint (.pt) to resume from")
     parser.add_argument("--skip-test", action="store_true", help="Skip the final test-set evaluation")
     args = parser.parse_args()
@@ -127,6 +128,9 @@ def main() -> None:
         click_config = yaml.safe_load(f)["clicks"]
     with open(args.train_config) as f:
         train_config = yaml.safe_load(f)
+
+    if args.base_channels is not None:
+        train_config["model"]["base_channels"] = args.base_channels
 
     training = train_config["training"]
     if args.epochs is not None:

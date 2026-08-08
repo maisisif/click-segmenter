@@ -51,6 +51,7 @@ def main() -> None:
     parser.add_argument("--subset-size", type=int, default=None, help="Override overfit.subset_size")
     parser.add_argument("--epochs", type=int, default=None, help="Override overfit.epochs")
     parser.add_argument("--lr", type=float, default=None, help="Override overfit.lr")
+    parser.add_argument("--base-channels", type=int, default=None, help="Override model.base_channels")
     args = parser.parse_args()
 
     with open(args.data_config) as f:
@@ -59,6 +60,9 @@ def main() -> None:
         click_config = yaml.safe_load(f)["clicks"]
     with open(args.train_config) as f:
         train_config = yaml.safe_load(f)
+
+    if args.base_channels is not None:
+        train_config["model"]["base_channels"] = args.base_channels
 
     overfit_config = train_config["overfit"]
     if args.subset_size is not None:
@@ -73,7 +77,8 @@ def main() -> None:
     print(f"Using device: {device}")
     print(
         f"Overfit settings: subset_size={overfit_config['subset_size']} "
-        f"epochs={overfit_config['epochs']} lr={overfit_config['lr']}"
+        f"epochs={overfit_config['epochs']} lr={overfit_config['lr']} "
+        f"base_channels={train_config['model']['base_channels']}"
     )
 
     root = Path(data_config["dataset"]["root"]).expanduser()
