@@ -22,8 +22,8 @@ so a scene-object-graph stage can later consume the segmentation outputs.
 - **M2 — Click simulation + input encoding** ✅ Positive clicks sampled toward
   mask interior, optional negative clicks in a band outside the boundary
   (`src/data/clicks.py`), encoded as 2 extra channels (`src/data/encoding.py`).
-- **M3 — Baseline UNet + overfit sanity check** ✅ Depth-3 UNet (16/32/64/128)
-  memorizes a single instance to **IoU 1.0000, loss 0.0015**, confirming the
+- **M3 — Baseline UNet + overfit sanity check** ✅ Depth-3 UNet memorizes all 4
+  overfit instances to **IoU 1.0000** at `base_channels: 32`, confirming the
   data pipeline, loss and training loop are correct.
 - **M4 — Full training on MetaCentrum** 🔄 `scripts/train_full.py` is written
   (70/20/10 splits, per-epoch validation, best-epoch selection, held-out test
@@ -39,16 +39,26 @@ so a scene-object-graph stage can later consume the segmentation outputs.
 The pipeline runs end to end on MetaCentrum from a clean clone, on CPU, inside
 the OnDemand JupyterLab container.
 
-**M3 is resolved.** An earlier 4-instance run plateaued at IoU ~0.90 and then
-destabilized deterministically around epoch 587. That looked like a broken
-pipeline but was purely a learning rate that was too high to settle: at
-`lr: 0.001` a single instance reaches IoU 1.0000 with loss 0.0015 and no
-instability. The loss and metric code were reviewed and found correct (loss
-0.118 decomposed exactly to IoU 0.90). Config defaults are now `lr: 0.001`,
-`epochs: 2000`.
+**M3 is resolved.** It took two causes, found by bisecting the overfit subset:
 
-Best-checkpoint tracking was added along the way, so a late spike can no longer
-discard an otherwise good run.
+1. *Learning rate.* At `lr: 0.003` training destabilized deterministically
+   around epoch 587. At `lr: 0.001` that disappears entirely.
+2. *Model capacity.* At `base_channels: 16` the model memorizes 1, 2 or 3
+   instances to IoU 1.0000 but stalls at ~0.91 on 4. At `base_channels: 32` all
+   4 reach 1.0000 by epoch 500. A model that cannot memorize 4 examples is far
+   too small for ~700k instances, so this directly informs M4.
+
+Two hypotheses were tested and falsified along the way: that the click signal
+couldn't propagate far enough (disproved — 3 instances including two from the
+same image converge perfectly), and that mask fragmentation was to blame
+(disproved — the most fragmented instance, `building` with 10 components,
+converges fine). The distance-transform click encoding added while chasing the
+first hypothesis remains available via `clicks.encoding: distance` but is
+non-default and untested.
+
+The loss and metric code were reviewed and found correct (loss 0.118 decomposed
+exactly to IoU 0.90). Best-checkpoint tracking was added along the way, so a
+late spike can no longer discard an otherwise good run.
 
 No GPU run has succeeded yet, and no training on the full dataset has been
 attempted.
@@ -88,10 +98,13 @@ Agreed direction for the deliverable, which shapes M4/M5:
 1. Dry-run the M4 script on the 3-image sample to shake out bugs before
    committing to a real run:
    `python3 scripts/train_full.py --device cpu --epochs 2`
-2. Submit `scripts/metacentrum/export_data.pbs` to materialize the full dataset.
-   Note `qsub` is unavailable inside the Jupyter container, so submit via the
-   OnDemand Job Composer or an SSH session to a frontend. Also note the NGC
-   container lacks `datasets`/`pyarrow`, which the export needs.
+2. Submit `scripts/metacentrum/export_data.pbs` from a frontend over SSH
+   (`qsub` is unavailable inside the OnDemand Jupyter container). The job is
+   self-contained: it builds its own small venv, caches Hugging Face downloads
+   on node-local scratch rather than home, and defaults to 3000 train / 600 val
+   images rather than the full 25,574. Exporting everything means ~700k small
+   PNGs, which risks hitting an inode quota; a few thousand images is enough to
+   train a genuinely useful model and is much faster to get moving.
 3. Get an OnDemand session on a GPU with compute capability >= 7.5 and confirm
    CUDA works.
 4. Run full training, then build the notebook with curves and results.

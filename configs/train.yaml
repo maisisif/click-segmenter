@@ -7,7 +7,11 @@ seed: 0
 device: auto
 
 model:
-  base_channels: 16 # 16-32-64-128 channel progression; small on purpose for fast local iteration
+  # 32-64-128-256 channel progression. Was 16, which measurably saturated: at
+  # base_channels 16 the overfit check could memorize 3 instances to IoU 1.0000
+  # but stalled at ~0.91 on 4. At 32 all 4 reach 1.0000 by epoch 500. If the
+  # model cannot memorize 4 examples it is far too small for ~700k instances.
+  base_channels: 32
 
 data:
   image_size: 128 # must be divisible by 8 for this depth-3 UNet

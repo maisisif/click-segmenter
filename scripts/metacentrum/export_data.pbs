@@ -1,39 +1,82 @@
 #!/bin/bash
-# Exports the full ADE20K HF mirror (1aurent/ADE20K) directly on MetaCentrum --
-# no need to download the ~6GB / ~27k images locally first. Runs as a batch
-# job (not on a frontend) since this is real CPU/network/disk work, not the
-# "light setup" frontends are meant for.
+# Exports the ADE20K HF mirror (1aurent/ADE20K) into the on-disk layout that
+# src/data/ade20k.py expects, directly on MetaCentrum. Nothing needs to be
+# downloaded to your laptop.
 #
-# Prereq: setup_env.sh has already been run once (venv + repo clones exist).
+# Self-contained: builds its own small venv on first run (datasets + pyarrow +
+# pillow only, no torch), so setup_env.sh is NOT required.
 #
-#   qsub ~/projects/click-segmenter/scripts/metacentrum/export_data.pbs
-#   qstat -xu <username>
+# Submit from a frontend (qsub is not available inside the OnDemand Jupyter
+# container):
+#     ssh <username>@tarkil.metacentrum.cz
+#     qsub ~/projects/click-segmenter/scripts/metacentrum/export_data.pbs
+#     qstat -xu <username>
 #
-# Writes into ~/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE
-# -- the exact path configs/data.yaml already points at, so nothing else
-# needs to change once this finishes. No GPU needed for this step.
-#
-# Walltime is generous (train split alone is ~25,574 images) -- shrink it
-# once you've seen how long a first run actually takes.
+# Tune how much to export with LIMIT below. The full train split is 25,574
+# images and ~700k instance masks, which is a LOT of small files -- see the
+# quota warning further down. Starting with a few thousand images is usually
+# the faster route to a working model.
 
 #PBS -N cs-export-ade20k
-#PBS -l select=1:ncpus=4:mem=8gb:scratch_local=20gb
-#PBS -l walltime=6:00:00
+#PBS -l select=1:ncpus=4:mem=16gb:scratch_local=100gb
+#PBS -l walltime=12:00:00
 #PBS -j oe
 
 set -euo pipefail
 
-module load python-modules || echo "module name may have changed -- check 'module avail python'"
-source "$HOME/venvs/click-segmenter/bin/activate"
+# How many images to export per split. Empty means "all".
+# 3000 train / 600 val is a good first target: enough to train a genuinely
+# useful model, small enough to finish in well under an hour.
+LIMIT_TRAIN=3000
+LIMIT_VAL=600
 
-cd "$HOME/projects/click-segmenter"
+VENV="$HOME/venvs/ade20k-export"
 OUTPUT_ROOT="$HOME/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE"
 
-echo "=== Exporting train split ==="
-python scripts/export_ade20k.py --split train --output-root "$OUTPUT_ROOT"
+echo "=== Node ==="
+hostname -f
+df -h "$SCRATCHDIR" | tail -1
 
-echo "=== Exporting validation split ==="
-python scripts/export_ade20k.py --split validation --output-root "$OUTPUT_ROOT"
+# Keep the Hugging Face cache on fast node-local scratch rather than the shared
+# home filesystem. The parquet shards total ~6GB and would otherwise land in
+# ~/.cache and count against your home quota.
+export HF_HOME="$SCRATCHDIR/hf-cache"
+mkdir -p "$HF_HOME"
 
-echo "=== Done. Row counts: ==="
-find "$OUTPUT_ROOT" -name "*.jpg" | wc -l
+echo "=== Environment ==="
+module load python-modules || echo "module name may have changed -- check 'module avail python'"
+
+if [ ! -d "$VENV" ]; then
+    echo "Creating venv at $VENV"
+    python3 -m venv "$VENV"
+    "$VENV/bin/pip" install --upgrade pip
+    # Deliberately not installing torch: the export is pure data wrangling.
+    "$VENV/bin/pip" install datasets pyarrow pillow numpy
+else
+    echo "Reusing existing venv at $VENV"
+fi
+source "$VENV/bin/activate"
+
+cd "$HOME/projects/click-segmenter"
+
+echo "=== Quota before ==="
+# The export writes one directory and many small PNGs per image. Exporting the
+# full dataset means ~700k files, which can hit an inode quota long before a
+# size quota. Check both if this job fails with "disk quota exceeded".
+quota -s 2>/dev/null || echo "(quota command unavailable, skipping)"
+
+echo "=== Exporting train split (limit: ${LIMIT_TRAIN:-all}) ==="
+python scripts/export_ade20k.py --split train --output-root "$OUTPUT_ROOT" \
+    ${LIMIT_TRAIN:+--limit "$LIMIT_TRAIN"}
+
+echo "=== Exporting validation split (limit: ${LIMIT_VAL:-all}) ==="
+python scripts/export_ade20k.py --split validation --output-root "$OUTPUT_ROOT" \
+    ${LIMIT_VAL:+--limit "$LIMIT_VAL"}
+
+echo "=== Result ==="
+echo "images exported: $(find "$OUTPUT_ROOT" -name '*.jpg' | wc -l)"
+echo "instance masks:  $(find "$OUTPUT_ROOT" -name 'instance_*.png' | wc -l)"
+quota -s 2>/dev/null || true
+
+clean_scratch
+echo "=== Done ==="
