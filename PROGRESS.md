@@ -25,10 +25,9 @@ so a scene-object-graph stage can later consume the segmentation outputs.
 - **M3 — Baseline UNet + overfit sanity check** ✅ Depth-3 UNet memorizes all 4
   overfit instances to **IoU 1.0000** at `base_channels: 32`, confirming the
   data pipeline, loss and training loop are correct.
-- **M4 — Full training on MetaCentrum** 🔄 `scripts/train_full.py` is written
-  (70/20/10 splits, per-epoch validation, best-epoch selection, held-out test
-  evaluation, JSON history). Not yet run: needs the full dataset and a working
-  GPU node.
+- **M4 — Full training on MetaCentrum** ✅ First real training run complete.
+  40 epochs on 3,000 exported images, best validation IoU **0.4928** at epoch
+  32, held-out test IoU **0.4990**.
 - **M5 — Evaluation (IoU/Dice/NoC) + SAM baseline comparison** ⬜ Basic IoU is
   in place; Dice and NoC are not.
 - **M6 — Interactive UI** ⬜
@@ -75,39 +74,64 @@ Agreed direction for the deliverable, which shapes M4/M5:
   them, then the scene-graph stage.
 - Spend time on the underlying theory, not just the code.
 
+## M4 results (2026-08-08, job 22750050)
+
+Data: 3,000 train + 600 validation images exported from the HF mirror, split
+70/20/10 by image into 2,522 / 721 / 360 images = 50,451 / 14,599 / 7,163
+instances. Model: depth-3 UNet, `base_channels: 32`, 128px, batch 16, Adam at
+lr 0.001, 40 epochs, ~390s/epoch on an A40 (~4.4 hours total).
+
+| Split | Loss | IoU |
+| --- | --- | --- |
+| train (epoch 40) | 0.4584 | 0.5530 |
+| validation (best, epoch 32) | 0.5345 | 0.4928 |
+| **test (best checkpoint)** | 0.5257 | **0.4990** |
+
+Test tracking validation this closely is the key sanity check: the splits are
+sound and epoch selection did not overfit to validation.
+
+Validation plateaued around epoch 29 (0.483-0.493) while training IoU kept
+rising to 0.553, so the model had begun to overfit and more epochs would not
+help. The largest available lever is more data: this used 3,000 of the 25,574
+images in the mirror, roughly 12%. Other levers, roughly in order of expected
+value: pretrained encoder, higher input resolution, stronger augmentation,
+iterative click refinement at training time.
+
 ## Blocked on
 
-1. **GPU node incompatibility.** The OnDemand `NGC/PyTorch:25.02-py3.SIF`
-   container ships CUDA kernels for compute capability sm_75 and newer. The
-   `konos` cluster is GTX 1080 Ti (sm_61), so `torch.cuda.is_available()` returns
-   True but any kernel launch fails with "no kernel image is available for
-   execution on the device". Needs a session on sm_75+ hardware (`galdor`,
-   `fobos`, `zia`, `bee`, `fer`, `glados`). The OnDemand launch form exposes no
-   `gpu_cap` field, only a PBS Queue dropdown, so how to pin the hardware is
-   still open.
+Nothing. Both earlier blockers are resolved: GPU jobs work via
+`gpu_cap=compute_75` in a batch job, and 3,600 images are exported to brno2.
 
-2. **Full dataset not yet materialized.** ADE20K official registration
-   (ade20k.csail.mit.edu) has been broken for weeks. Decision: use the Hugging
-   Face mirror `1aurent/ADE20K` (full 2021 release). Its schema and ternary
-   {0, 128, 255} amodal mask encoding were verified, and
-   `scripts/export_ade20k.py` is written, but has not been run. COCO and PSG
-   were both ruled out.
+## Lessons that cost time (worth not repeating)
+
+- **`$HOME` is not stable across MetaCentrum nodes.** You have a home on every
+  storage, and `$HOME` points at whichever belongs to the node you landed on.
+  Three jobs failed this way. Batch jobs must use absolute `/storage/brno2/...`
+  paths. Overriding `HOME` for a Singularity container does not work either --
+  it explicitly refuses.
+- **`qsub` only exists on frontends**, not inside the OnDemand Jupyter
+  container. Use Clusters -> Shell Access.
+- **Interactive jobs die when the browser tab reloads.** Anything longer than a
+  few minutes belongs in a batch job.
+- **`load_sample` decodes every mask for an image** (~20, sometimes 70). Using
+  it in the training loop made the dataloader ~10x slower than necessary;
+  `load_instance` decodes only what is needed.
+- **Old GPUs pass `torch.cuda.is_available()` and then fail at kernel launch.**
+  The NGC container needs sm_75+; always request `gpu_cap=compute_75`.
 
 ## Next steps
 
-1. Dry-run the M4 script on the 3-image sample to shake out bugs before
-   committing to a real run:
-   `python3 scripts/train_full.py --device cpu --epochs 2`
-2. Submit `scripts/metacentrum/export_data.pbs` from a frontend over SSH
-   (`qsub` is unavailable inside the OnDemand Jupyter container). The job is
-   self-contained: it builds its own small venv, caches Hugging Face downloads
-   on node-local scratch rather than home, and defaults to 3000 train / 600 val
-   images rather than the full 25,574. Exporting everything means ~700k small
-   PNGs, which risks hitting an inode quota; a few thousand images is enough to
-   train a genuinely useful model and is much faster to get moving.
-3. Get an OnDemand session on a GPU with compute capability >= 7.5 and confirm
-   CUDA works.
-4. Run full training, then build the notebook with curves and results.
+1. **Build the results notebook** Kassem asked for: training curves from
+   `outputs/history.json`, best epoch marked, the test number, and example
+   predictions with the click overlaid. Keep logic in `src/`; the notebook
+   imports and plots. This is the deliverable.
+2. **M5 metrics**: add Dice, and NoC (number of clicks to reach a target IoU),
+   the standard interactive-segmentation metric. Optionally compare against a
+   pretrained SAM baseline.
+3. **Scale up the data.** Rerun `export_data.pbs` with `LIMIT_TRAIN=` empty for
+   all 25,574 images (~4GB, ~630k files -- quota is fine, brno2 has no file
+   count limit). Retrain. This is the highest-value single change.
+4. **M6**: inference GUI that loads `best.pt` and segments from a real click.
 
 ## Environment notes
 
