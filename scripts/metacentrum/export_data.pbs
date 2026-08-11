@@ -25,10 +25,19 @@
 set -euo pipefail
 
 # How many images to export per split. Empty means "all".
-# 3000 train / 600 val is a good first target: enough to train a genuinely
-# useful model, small enough to finish in well under an hour.
-LIMIT_TRAIN=3000
-LIMIT_VAL=600
+#
+# 10000/2000 is the second pass. The first run used 3000/600 and produced test
+# IoU 0.4990, with validation plateauing while training IoU kept climbing --
+# i.e. data-starved rather than under-trained, so more data is the lever.
+#
+# Not the full 25,574: at measured throughput that would be ~430k instances and
+# roughly 55 min/epoch, so a useful number of epochs would blow past the 12h
+# walltime. 10000 images is ~170k instances and fits comfortably.
+#
+# Note this re-exports the first 3000 images as well (streaming restarts at row
+# 0), which is wasted work but harmless -- it simply overwrites identical files.
+LIMIT_TRAIN=10000
+LIMIT_VAL=2000
 
 # $HOME is NOT stable across MetaCentrum nodes -- you have a home directory on
 # several storages, and which one $HOME points at depends on where the job
