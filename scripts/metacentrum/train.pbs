@@ -31,8 +31,9 @@ REPO="$HOME_DIR/projects/click-segmenter"
 DATA_ROOT="$HOME_DIR/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE"
 IMAGE="/cvmfs/singularity.metacentrum.cz/NGC/PyTorch:25.02-py3.SIF"
 
-# Set RESUME to a checkpoint path to continue an interrupted run, e.g.
-#   RESUME="$REPO/outputs/checkpoints/latest.pt"
+# --auto-resume picks up outputs/checkpoints/latest.pt if it exists, so
+# resubmitting this same script after a walltime kill continues the run rather
+# than restarting it. Delete outputs/checkpoints/ to force a fresh start.
 RESUME=""
 
 echo "=== Node ==="
@@ -62,7 +63,7 @@ singularity exec --nv \
 set -euo pipefail
 cd '$REPO'
 python3 -c 'import torch; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())'
-python3 -u scripts/train_full.py --data-root '$DATA_ROOT' ${RESUME:+--resume '$RESUME'}
+python3 -u scripts/train_full.py --data-root '$DATA_ROOT' --auto-resume ${RESUME:+--resume '$RESUME'}
 " 2>&1 | tee "$LIVE_LOG"
 
 echo "=== Results ==="

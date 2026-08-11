@@ -30,12 +30,21 @@ training:
   # Splits are by image, not instance, to avoid leaking scenes between sets.
   splits: [0.7, 0.2, 0.1] # train / val / test
   split_seed: 0
-  epochs: 40
+  # A ceiling, not a target: early stopping ends the run once validation stops
+  # improving. One 12h job will not reach 200 epochs, so long runs chain across
+  # jobs via --auto-resume.
+  epochs: 200
   # Larger batches mean fewer Python-side iterations and better GPU
-  # utilisation. At 128px with base_channels 32 this is nowhere near filling
-  # an A40's memory.
-  batch_size: 64
-  lr: 0.001
+  # utilisation. 128 at 128px with base_channels 32 uses only a few GB, so it
+  # fits the smallest card gpu_cap=compute_75 can land on (A4000, 16GB) as well
+  # as an A40. Check headroom with nvidia-smi during a run and raise if free.
+  batch_size: 128
+  # Scaled with the batch size (was 0.001 at batch 64). ReduceLROnPlateau pulls
+  # it back down if it proves too high, so erring upward is cheap.
+  lr: 0.002
+  lr_decay_factor: 0.5 # multiply lr by this when validation IoU plateaus
+  lr_decay_patience: 8 # epochs without improvement before decaying
+  early_stopping_patience: 30 # epochs without improvement before stopping entirely
   num_workers: 16 # match ncpus in scripts/metacentrum/train.pbs; loading is the bottleneck
   history_path: outputs/history.json
 

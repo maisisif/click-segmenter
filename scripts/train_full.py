@@ -139,6 +139,12 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=None, help="Override training.lr")
     parser.add_argument("--base-channels", type=int, default=None, help="Override model.base_channels")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint (.pt) to resume from")
+    parser.add_argument(
+        "--auto-resume",
+        action="store_true",
+        help="Resume from outputs/checkpoints/latest.pt if it exists. Lets a long run "
+        "continue across several jobs after a walltime kill.",
+    )
     parser.add_argument("--skip-test", action="store_true", help="Skip the final test-set evaluation")
     args = parser.parse_args()
 
@@ -198,23 +204,59 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=training["lr"])
     criterion = BCEDiceLoss()
 
-    start_epoch = 1
-    if args.resume:
-        start_epoch = load_checkpoint(args.resume, model, optimizer, device) + 1
-        print(f"Resumed from {args.resume!r} at epoch {start_epoch}")
+    # Drop the learning rate when validation IoU stops improving. Adam alone
+    # bounces around the minimum at a fixed rate; decaying on plateau lets it
+    # settle into it. `mode="max"` because we track IoU, where higher is better.
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=training["lr_decay_factor"],
+        patience=training["lr_decay_patience"],
+    )
 
     checkpoint_dir = Path(train_config["checkpoint"]["dir"])
     history_path = Path(training["history_path"])
     history: list[dict] = []
     best_val_iou = float("-inf")
     best_epoch = 0
+    start_epoch = 1
+
+    # A 200-epoch run cannot fit in one 12-hour job, so a long run is a chain
+    # of jobs that each resume from the last checkpoint. Everything needed to
+    # continue seamlessly (scheduler state, best score, history) is restored
+    # here, not just the weights.
+    resume_path = Path(args.resume) if args.resume else None
+    if args.auto_resume and resume_path is None:
+        candidate = checkpoint_dir / "latest.pt"
+        if candidate.exists():
+            resume_path = candidate
+            print(f"Auto-resuming from {candidate}")
+        else:
+            print("No checkpoint found, starting from scratch")
+
+    if resume_path is not None:
+        ckpt = load_checkpoint(resume_path, model, optimizer, device, scheduler)
+        start_epoch = ckpt["epoch"] + 1
+        best_val_iou = ckpt.get("best_val_iou", float("-inf"))
+        best_epoch = ckpt.get("best_epoch", 0)
+        history = ckpt.get("history", [])
+        print(
+            f"Resumed from {resume_path} at epoch {start_epoch} "
+            f"(best val IoU {best_val_iou:.4f} at epoch {best_epoch}, "
+            f"{len(history)} epochs of history)"
+        )
 
     epochs = training["epochs"]
+    patience = training["early_stopping_patience"]
+
     for epoch in range(start_epoch, epochs + 1):
         started = time.time()
         train_loss, train_iou = run_epoch(model, train_loader, criterion, device, optimizer)
         val_loss, val_iou = run_epoch(model, val_loader, criterion, device)
         elapsed = time.time() - started
+
+        lr_now = optimizer.param_groups[0]["lr"]
+        scheduler.step(val_iou)
 
         history.append(
             {
@@ -223,6 +265,7 @@ def main() -> None:
                 "train_iou": train_iou,
                 "val_loss": val_loss,
                 "val_iou": val_iou,
+                "lr": lr_now,
                 "seconds": elapsed,
             }
         )
@@ -235,15 +278,33 @@ def main() -> None:
         marker = ""
         if val_iou > best_val_iou:
             best_val_iou, best_epoch = val_iou, epoch
-            save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, val_loss)
             marker = "  <- best"
+
+        state = {
+            "best_val_iou": best_val_iou,
+            "best_epoch": best_epoch,
+            "history": history,
+            "scheduler_state_dict": scheduler.state_dict(),
+        }
+        if marker:
+            save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, val_loss, state)
 
         print(
             f"epoch {epoch:3d}/{epochs}  "
             f"train loss={train_loss:.4f} IoU={train_iou:.4f}  |  "
-            f"val loss={val_loss:.4f} IoU={val_iou:.4f}  ({elapsed:.0f}s){marker}"
+            f"val loss={val_loss:.4f} IoU={val_iou:.4f}  "
+            f"lr={lr_now:.2e}  ({elapsed:.0f}s){marker}"
         )
-        save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, train_loss)
+        save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, train_loss, state)
+
+        # Stop once validation has not improved for `patience` epochs. Training
+        # past that point only widens the train/validation gap.
+        if epoch - best_epoch >= patience:
+            print(
+                f"\nEarly stopping: no validation improvement in {patience} epochs "
+                f"(best was epoch {best_epoch})"
+            )
+            break
 
     print(f"\nBest validation IoU: {best_val_iou:.4f} at epoch {best_epoch}")
 
@@ -254,7 +315,7 @@ def main() -> None:
     # Load the best-validation weights before touching the test set: reporting
     # the *last* epoch's weights would be reporting a model we never selected.
     print("Evaluating best checkpoint on the held-out test split...")
-    load_checkpoint(str(checkpoint_dir / "best.pt"), model, optimizer, device)
+    load_checkpoint(checkpoint_dir / "best.pt", model, optimizer, device)
     test_loader = build_loader(splits["test"], train_config, click_config, shuffle=False, deterministic=True, split_name="test")
     test_loss, test_iou = run_epoch(model, test_loader, criterion, device)
     print(f"Test loss={test_loss:.4f}  Test IoU={test_iou:.4f}  ({len(test_loader.dataset)} instances)")

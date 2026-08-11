@@ -113,7 +113,7 @@ def main() -> None:
 
     start_epoch = 1
     if args.resume:
-        start_epoch = load_checkpoint(args.resume, model, optimizer, device) + 1
+        start_epoch = load_checkpoint(args.resume, model, optimizer, device)["epoch"] + 1
         print(f"Resumed from {args.resume!r} at epoch {start_epoch}")
 
     inputs, targets = next(iter(loader))
