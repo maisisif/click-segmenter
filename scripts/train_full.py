@@ -61,11 +61,23 @@ def build_loader(
         lazy=True,  # the full dataset can't be held in memory
         index_cache=Path("outputs") / f"instance_index_{split_name}.json",
     )
+    # Training is I/O bound, not compute bound: each item decodes a JPEG and a
+    # PNG off shared storage, so the GPU spends most of its time waiting. These
+    # three settings target that directly.
+    num_workers = train_config["training"]["num_workers"]
     return DataLoader(
         dataset,
         batch_size=train_config["training"]["batch_size"],
         shuffle=shuffle,
-        num_workers=train_config["training"]["num_workers"],
+        num_workers=num_workers,
+        # Page-locked memory makes the host-to-device copy faster and lets it
+        # overlap with compute.
+        pin_memory=True,
+        # Without this the workers are torn down and respawned every epoch,
+        # and each respawn re-imports torch and reopens the dataset.
+        persistent_workers=num_workers > 0,
+        # Each worker keeps this many batches queued ahead of the GPU.
+        prefetch_factor=4 if num_workers > 0 else None,
     )
 
 

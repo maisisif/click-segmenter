@@ -15,7 +15,9 @@
 # torch.cuda.is_available() and then die at the first kernel launch.
 
 #PBS -N cs-train
-#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb:scratch_local=50gb:gpu_cap=compute_75
+# 16 CPUs, not 8: the dataloader is the bottleneck (measured ~124ms/batch
+# against ~15ms of actual GPU work), so CPU count sets throughput here.
+#PBS -l select=1:ncpus=16:ngpus=1:mem=48gb:scratch_local=50gb:gpu_cap=compute_75
 #PBS -l walltime=12:00:00
 #PBS -j oe
 

@@ -31,9 +31,12 @@ training:
   splits: [0.7, 0.2, 0.1] # train / val / test
   split_seed: 0
   epochs: 40
-  batch_size: 16
+  # Larger batches mean fewer Python-side iterations and better GPU
+  # utilisation. At 128px with base_channels 32 this is nowhere near filling
+  # an A40's memory.
+  batch_size: 64
   lr: 0.001
-  num_workers: 8 # match ncpus in scripts/metacentrum/train.pbs; loading is I/O bound
+  num_workers: 16 # match ncpus in scripts/metacentrum/train.pbs; loading is the bottleneck
   history_path: outputs/history.json
 
 checkpoint:
