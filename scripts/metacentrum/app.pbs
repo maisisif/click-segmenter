@@ -15,8 +15,12 @@
 # The link is reachable from anywhere, so it can be sent to someone else to try.
 # It dies when this job ends, so pick a walltime that covers the demo.
 
+# No GPU. A single 128px forward pass through this UNet takes tens of
+# milliseconds on CPU, which is imperceptible when a human is clicking. Asking
+# for a GPU only means queueing behind real training jobs -- a demo that starts
+# in one minute on CPU beats one that starts in thirty on a GPU.
 #PBS -N cs-app
-#PBS -l select=1:ncpus=4:ngpus=1:mem=16gb:gpu_cap=compute_75
+#PBS -l select=1:ncpus=4:mem=8gb
 #PBS -l walltime=8:00:00
 #PBS -j oe
 
@@ -30,7 +34,6 @@ LIVE_LOG="$REPO/outputs/app.log"
 
 echo "=== Node ==="
 hostname -f
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 ls -l "$CHECKPOINT" || { echo "FATAL: no checkpoint at $CHECKPOINT"; exit 1; }
 
 mkdir -p "$(dirname "$LIVE_LOG")"
@@ -41,7 +44,7 @@ echo "Live log: $LIVE_LOG"
 export PYTHONUSERBASE="$SCRATCHDIR/pylibs"
 mkdir -p "$PYTHONUSERBASE"
 
-singularity exec --nv \
+singularity exec \
     --bind "$HOME_DIR:$HOME_DIR" \
     --bind "$SCRATCHDIR:$SCRATCHDIR" \
     --env PYTHONUSERBASE="$PYTHONUSERBASE" \
@@ -49,7 +52,7 @@ singularity exec --nv \
 set -euo pipefail
 cd '$REPO'
 pip install --user --quiet gradio
-python3 -u scripts/app.py --checkpoint '$CHECKPOINT' --share
+python3 -u scripts/app.py --checkpoint '$CHECKPOINT' --device cpu --share
 " 2>&1 | tee "$LIVE_LOG"
 
 clean_scratch
