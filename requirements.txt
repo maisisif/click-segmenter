@@ -6,3 +6,4 @@ scipy
 torch
 datasets
 pyarrow
+gradio

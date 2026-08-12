@@ -25,12 +25,15 @@ so a scene-object-graph stage can later consume the segmentation outputs.
 - **M3 — Baseline UNet + overfit sanity check** ✅ Depth-3 UNet memorizes all 4
   overfit instances to **IoU 1.0000** at `base_channels: 32`, confirming the
   data pipeline, loss and training loop are correct.
-- **M4 — Full training on MetaCentrum** ✅ First real training run complete.
-  40 epochs on 3,000 exported images, best validation IoU **0.4928** at epoch
-  32, held-out test IoU **0.4990**.
+- **M4 — Full training on MetaCentrum** ✅ Two runs complete. Best result:
+  test IoU **0.5035** on 10,000 images. Tripling the data from the first run
+  moved test IoU by only +0.0045, which rules out data volume as the limit.
 - **M5 — Evaluation (IoU/Dice/NoC) + SAM baseline comparison** ⬜ Basic IoU is
   in place; Dice and NoC are not.
-- **M6 — Interactive UI** ⬜
+- **M6 — Interactive UI** 🔄 `scripts/app.py` (Gradio) built: upload an image,
+  click to segment, add include/exclude clicks to refine, adjustable threshold.
+  Inference logic lives in `src/inference/predictor.py` so the interface is
+  swappable. Not yet run against a real checkpoint.
 - **M7 — Polish (README, results, demo GIF)** ⬜
 
 ## Current status
@@ -97,6 +100,39 @@ images in the mirror, roughly 12%. Other levers, roughly in order of expected
 value: pretrained encoder, higher input resolution, stronger augmentation,
 iterative click refinement at training time.
 
+## M4 second run (2026-08-11, 10,000 images)
+
+Same architecture, 3.3x the data, plus ReduceLROnPlateau, early stopping and
+batch 128. Stopped early at epoch 65 (best was epoch 35).
+
+| Run | Train instances | Best val IoU | Test IoU |
+| --- | --- | --- | --- |
+| 3,000 images | 50,451 | 0.4928 | 0.4990 |
+| 10,000 images | 168,000 | 0.5072 | **0.5035** |
+
+**Tripling the data gained +0.0045 test IoU.** The "model is data-starved"
+hypothesis is falsified. Training IoU rose further than before (0.614 vs 0.553)
+while validation stayed at ~0.50, so the extra data was absorbed into fitting
+the training set, not into generalisation.
+
+A ceiling that does not move when the dataset triples is not a data ceiling.
+Remaining suspects, in order:
+
+1. **Input resolution.** At 128px a two-pixel boundary error is expensive in
+   IoU terms, and that cost is independent of dataset size. Leading suspect.
+2. **Architecture.** Depth-3 UNet, 16x16 bottleneck, limited global context.
+   Attention at the bottleneck is cheap (256 tokens) and is what the supervisor
+   suggested.
+3. **Click encoding.** `clicks.encoding: distance` is implemented but has never
+   been run. Still on `disk`.
+4. **Single-click ambiguity.** One click on a building is genuinely ambiguous
+   between wall, facade and whole structure. Some of the gap may be an
+   irreducible ceiling given the task definition.
+
+Diagnostic: the notebook's example predictions distinguish these. Blurry but
+roughly correct masks point at resolution; wrong object entirely points at the
+click encoding or ambiguity.
+
 ## Blocked on
 
 Nothing. Both earlier blockers are resolved: GPU jobs work via
@@ -121,17 +157,19 @@ Nothing. Both earlier blockers are resolved: GPU jobs work via
 
 ## Next steps
 
-1. **Build the results notebook** Kassem asked for: training curves from
-   `outputs/history.json`, best epoch marked, the test number, and example
-   predictions with the click overlaid. Keep logic in `src/`; the notebook
-   imports and plots. This is the deliverable.
-2. **M5 metrics**: add Dice, and NoC (number of clicks to reach a target IoU),
-   the standard interactive-segmentation metric. Optionally compare against a
-   pretrained SAM baseline.
-3. **Scale up the data.** Rerun `export_data.pbs` with `LIMIT_TRAIN=` empty for
-   all 25,574 images (~4GB, ~630k files -- quota is fine, brno2 has no file
-   count limit). Retrain. This is the highest-value single change.
-4. **M6**: inference GUI that loads `best.pt` and segments from a real click.
+1. **Rerun the notebook on the 10k results** and read the qualitative examples.
+   They discriminate between the remaining hypotheses far faster than another
+   training run would.
+2. **M6, the GUI.** Loads `best.pt`, takes a real click, shows the mask. The
+   supervisor asked for this to be built while training runs, and it does not
+   depend on improving the model.
+3. **Attack the 0.50 ceiling**, cheapest experiment first:
+   `clicks.encoding: distance` (config change only), then 256px input, then
+   attention at the bottleneck.
+4. **M5 metrics**: Dice, and NoC (number of clicks to reach a target IoU),
+   the standard interactive-segmentation metric. Optionally a SAM baseline.
+
+Do not spend more effort on dataset size. That was tested and rejected.
 
 ## Environment notes
 
