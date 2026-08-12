@@ -1,0 +1,55 @@
+#!/bin/bash
+# M6: run the Gradio interface as a BATCH job.
+#
+# An interactive job dies the moment the browser tab or SSH connection drops,
+# which makes it useless for a demo you want to leave running and share. As a
+# batch job the app stays up for the full walltime regardless of whether you
+# are connected.
+#
+# Submit from a frontend:
+#     qsub ~/projects/click-segmenter/scripts/metacentrum/app.pbs
+#
+# Then read the public link out of the log (wait a minute or two for startup):
+#     grep gradio.live ~/projects/click-segmenter/outputs/app.log
+#
+# The link is reachable from anywhere, so it can be sent to someone else to try.
+# It dies when this job ends, so pick a walltime that covers the demo.
+
+#PBS -N cs-app
+#PBS -l select=1:ncpus=4:ngpus=1:mem=16gb:gpu_cap=compute_75
+#PBS -l walltime=8:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+HOME_DIR="/storage/brno2/home/$USER"
+REPO="$HOME_DIR/projects/click-segmenter"
+IMAGE="/cvmfs/singularity.metacentrum.cz/NGC/PyTorch:25.02-py3.SIF"
+CHECKPOINT="${CHECKPOINT:-$REPO/outputs/checkpoints/best.pt}"
+LIVE_LOG="$REPO/outputs/app.log"
+
+echo "=== Node ==="
+hostname -f
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+ls -l "$CHECKPOINT" || { echo "FATAL: no checkpoint at $CHECKPOINT"; exit 1; }
+
+mkdir -p "$(dirname "$LIVE_LOG")"
+echo "Live log: $LIVE_LOG"
+
+# gradio is not in the NGC image. Installed to node-local scratch so it does
+# not accumulate in the home directory across runs.
+export PYTHONUSERBASE="$SCRATCHDIR/pylibs"
+mkdir -p "$PYTHONUSERBASE"
+
+singularity exec --nv \
+    --bind "$HOME_DIR:$HOME_DIR" \
+    --bind "$SCRATCHDIR:$SCRATCHDIR" \
+    --env PYTHONUSERBASE="$PYTHONUSERBASE" \
+    "$IMAGE" bash -c "
+set -euo pipefail
+cd '$REPO'
+pip install --user --quiet gradio
+python3 -u scripts/app.py --checkpoint '$CHECKPOINT' --share
+" 2>&1 | tee "$LIVE_LOG"
+
+clean_scratch
