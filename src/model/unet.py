@@ -1,4 +1,4 @@
-"""A small UNet-style encoder-decoder, trained from scratch (no pretrained weights).
+"""A UNet-style encoder-decoder, trained from scratch (no pretrained weights).
 
 Input: the image stacked with the click-encoding channels from `src.data.encoding`.
 Output: a single-channel logit map — the predicted foreground (clicked object) mask.
@@ -48,31 +48,67 @@ class Up(nn.Module):
 
 
 class UNet(nn.Module):
-    """Depth-3 UNet (3 downsampling stages). Input spatial size should be
-    divisible by 8 so the encoder/decoder resolutions line up exactly.
+    """UNet with a configurable number of downsampling stages.
+
+    `depth` counts the downsampling steps (the last one is the bottleneck), so
+    input height and width must both be divisible by 2**depth. Channel widths
+    double each stage from `base_channels`: depth 3 at base 32 gives
+    32-64-128-256, depth 4 adds a 512 bottleneck.
     """
 
-    def __init__(self, in_channels: int = 5, out_channels: int = 1, base_channels: int = 16) -> None:
+    def __init__(
+        self,
+        in_channels: int = 5,
+        out_channels: int = 1,
+        base_channels: int = 32,
+        depth: int = 3,
+    ) -> None:
         super().__init__()
-        c1, c2, c3, c4 = base_channels, base_channels * 2, base_channels * 4, base_channels * 8
+        if depth < 1:
+            raise ValueError(f"depth must be >= 1, got {depth}")
+        channels = [base_channels * 2**i for i in range(depth + 1)]
 
-        self.stem = DoubleConv(in_channels, c1)
-        self.down1 = Down(c1, c2)
-        self.down2 = Down(c2, c3)
-        self.bottleneck = Down(c3, c4)
-
-        self.up2 = Up(c4, c3, c3)
-        self.up1 = Up(c3, c2, c2)
-        self.up0 = Up(c2, c1, c1)
-        self.head = nn.Conv2d(c1, out_channels, kernel_size=1)
+        self.depth = depth
+        self.stem = DoubleConv(in_channels, channels[0])
+        self.downs = nn.ModuleList(Down(channels[i], channels[i + 1]) for i in range(depth))
+        self.ups = nn.ModuleList(
+            Up(channels[i + 1], channels[i], channels[i]) for i in reversed(range(depth))
+        )
+        self.head = nn.Conv2d(channels[0], out_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        s0 = self.stem(x)
-        s1 = self.down1(s0)
-        s2 = self.down2(s1)
-        b = self.bottleneck(s2)
+        skips = []
+        x = self.stem(x)
+        for down in self.downs:
+            skips.append(x)
+            x = down(x)
+        for up, skip in zip(self.ups, reversed(skips)):
+            x = up(x, skip)
+        return self.head(x)
 
-        u2 = self.up2(b, s2)
-        u1 = self.up1(u2, s1)
-        u0 = self.up0(u1, s0)
-        return self.head(u0)
+
+# Checkpoints saved before depth was configurable used fixed layer names
+# (down1/down2/bottleneck/up2/up1/up0). This maps them onto the ModuleList
+# naming so old checkpoints (e.g. the released best.pt) keep loading.
+_LEGACY_KEY_MAP = {
+    "down1.": "downs.0.",
+    "down2.": "downs.1.",
+    "bottleneck.": "downs.2.",
+    "up2.": "ups.0.",
+    "up1.": "ups.1.",
+    "up0.": "ups.2.",
+}
+
+
+def migrate_legacy_state_dict(state_dict: dict) -> dict:
+    """Rename pre-`depth` checkpoint keys to the current layout. No-op for new ones."""
+    if not any(key.startswith(("down1.", "bottleneck.")) for key in state_dict):
+        return state_dict
+    migrated = {}
+    for key, value in state_dict.items():
+        for old, new in _LEGACY_KEY_MAP.items():
+            if key.startswith(old):
+                key = new + key[len(old):]
+                break
+        migrated[key] = value
+    return migrated

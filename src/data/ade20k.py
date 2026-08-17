@@ -43,6 +43,18 @@ def _load_instance_mask(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return arr == 255, arr >= 128
 
 
+def load_instance_mask(image_path: Path, instance_id: int) -> np.ndarray:
+    """Decode a single instance's visible mask, without touching the image.
+
+    Used for neighbour-instance negative clicks, where we need one extra mask
+    but already have the image decoded.
+    """
+    stem = image_path.stem
+    mask_path = image_path.parent / stem / f"instance_{instance_id:03d}_{stem}.png"
+    mask_visible, _ = _load_instance_mask(mask_path)
+    return mask_visible
+
+
 def load_instance(image_path: Path, instance_id: int) -> tuple[np.ndarray, np.ndarray]:
     """Load the image plus a single instance's visible mask, decoding nothing else.
 

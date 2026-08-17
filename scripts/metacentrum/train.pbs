@@ -17,7 +17,9 @@
 #PBS -N cs-train
 # 16 CPUs, not 8: the dataloader is the bottleneck (measured ~124ms/batch
 # against ~15ms of actual GPU work), so CPU count sets throughput here.
-#PBS -l select=1:ncpus=16:ngpus=1:mem=48gb:scratch_local=50gb:gpu_cap=compute_75
+# gpu_mem=30gb: at 384x512 depth-4 batch-32 the activations no longer fit a
+# 16GB A4000, so keep the job off the smaller cards.
+#PBS -l select=1:ncpus=16:ngpus=1:mem=48gb:scratch_local=50gb:gpu_cap=compute_75:gpu_mem=30gb
 #PBS -l walltime=12:00:00
 #PBS -j oe
 

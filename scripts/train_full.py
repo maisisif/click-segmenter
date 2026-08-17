@@ -28,6 +28,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from torch.utils.data import DataLoader
@@ -138,6 +139,8 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None, help="Override training.batch_size")
     parser.add_argument("--lr", type=float, default=None, help="Override training.lr")
     parser.add_argument("--base-channels", type=int, default=None, help="Override model.base_channels")
+    parser.add_argument("--depth", type=int, default=None, help="Override model.depth")
+    parser.add_argument("--max-images", type=int, default=None, help="Override training.max_images (0 = all)")
     parser.add_argument("--resume", default=None, help="Path to a checkpoint (.pt) to resume from")
     parser.add_argument(
         "--auto-resume",
@@ -157,6 +160,8 @@ def main() -> None:
 
     if args.base_channels is not None:
         train_config["model"]["base_channels"] = args.base_channels
+    if args.depth is not None:
+        train_config["model"]["depth"] = args.depth
 
     training = train_config["training"]
     if args.epochs is not None:
@@ -173,6 +178,16 @@ def main() -> None:
     root = Path(args.data_root or data_config["dataset"]["root"]).expanduser()
     image_paths = discover_samples(root)
     print(f"Found {len(image_paths)} images under {root}")
+
+    # Deterministic subsample. Our data ablation (3k vs 10k images: +0.0045
+    # test IoU) showed volume is not the limit, so training on fewer images at
+    # higher resolution is a measured trade for iteration speed.
+    max_images = args.max_images if args.max_images is not None else training.get("max_images")
+    if max_images and len(image_paths) > max_images:
+        rng = np.random.default_rng(training["split_seed"])
+        keep = sorted(rng.choice(len(image_paths), size=max_images, replace=False))
+        image_paths = [image_paths[i] for i in keep]
+        print(f"Subsampled to {len(image_paths)} images (max_images={max_images})")
     if not image_paths:
         raise SystemExit(
             f"No images found under {root}.\n"
@@ -200,7 +215,12 @@ def main() -> None:
         f"val: {len(val_loader.dataset)}  (test built later)"
     )
 
-    model = UNet(in_channels=5, out_channels=1, base_channels=train_config["model"]["base_channels"]).to(device)
+    model = UNet(
+        in_channels=5,
+        out_channels=1,
+        base_channels=train_config["model"]["base_channels"],
+        depth=train_config["model"].get("depth", 3),
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training["lr"])
     criterion = BCEDiceLoss()
 

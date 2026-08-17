@@ -1,0 +1,6 @@
+# Only needed to build the dataset with scripts/export_ade20k.py.
+# Reading the Hugging Face mirror's parquet files requires these; running or
+# training the model does not.
+-r requirements.txt
+datasets
+pyarrow

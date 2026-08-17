@@ -7,14 +7,20 @@ seed: 0
 device: auto
 
 model:
-  # 32-64-128-256 channel progression. Was 16, which measurably saturated: at
-  # base_channels 16 the overfit check could memorize 3 instances to IoU 1.0000
-  # but stalled at ~0.91 on 4. At 32 all 4 reach 1.0000 by epoch 500. If the
-  # model cannot memorize 4 examples it is far too small for ~700k instances.
+  # Was 16, which measurably saturated: at base_channels 16 the overfit check
+  # could memorize 3 instances to IoU 1.0000 but stalled at ~0.91 on 4. At 32
+  # all 4 reach 1.0000 by epoch 500.
   base_channels: 32
+  # Downsampling stages (the last is the bottleneck). Was 3; raised to 4 with
+  # the larger input so the bottleneck still sees a comparable fraction of the
+  # image. Input height and width must divide by 2**depth.
+  depth: 4
 
 data:
-  image_size: 128 # must be divisible by 8 for this depth-3 UNet
+  # (height, width). Was 128 square, which both starved boundaries of pixels
+  # and squashed 4:3 photos into squares. 384x512 preserves the typical ADE20K
+  # aspect ratio; both divide by 16 as depth-4 requires.
+  image_size: [384, 512]
 
 overfit:
   subset_size: 4
@@ -34,14 +40,15 @@ training:
   # improving. One 12h job will not reach 200 epochs, so long runs chain across
   # jobs via --auto-resume.
   epochs: 200
-  # Larger batches mean fewer Python-side iterations and better GPU
-  # utilisation. 128 at 128px with base_channels 32 uses only a few GB, so it
-  # fits the smallest card gpu_cap=compute_75 can land on (A4000, 16GB) as well
-  # as an A40. Check headroom with nvidia-smi during a run and raise if free.
-  batch_size: 128
-  # Scaled with the batch size (was 0.001 at batch 64). ReduceLROnPlateau pulls
-  # it back down if it proves too high, so erring upward is cheap.
-  lr: 0.002
+  # 384x512 input is ~12x the pixels of 128 square, so the batch comes down
+  # accordingly. The PBS job requests gpu_mem to avoid landing on a 16GB card.
+  batch_size: 32
+  # Scaled back down with the batch size. ReduceLROnPlateau adjusts from here.
+  lr: 0.001
+  # Cap on how many images to use. Our own ablation showed tripling the data
+  # moved test IoU by +0.0045, so training on the 3000-image subset at high
+  # resolution is a measured trade, not a guess. Set null to use everything.
+  max_images: 3000
   lr_decay_factor: 0.5 # multiply lr by this when validation IoU plateaus
   lr_decay_patience: 8 # epochs without improvement before decaying
   early_stopping_patience: 30 # epochs without improvement before stopping entirely

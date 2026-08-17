@@ -107,7 +107,12 @@ def main() -> None:
     subset = Subset(dataset, subset_indices)
     loader = DataLoader(subset, batch_size=len(subset), shuffle=False)
 
-    model = UNet(in_channels=5, out_channels=1, base_channels=train_config["model"]["base_channels"]).to(device)
+    model = UNet(
+        in_channels=5,
+        out_channels=1,
+        base_channels=train_config["model"]["base_channels"],
+        depth=train_config["model"].get("depth", 3),
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=overfit_config["lr"])
     criterion = BCEDiceLoss()
 

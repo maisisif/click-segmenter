@@ -155,6 +155,34 @@ Nothing. Both earlier blockers are resolved: GPU jobs work via
 - **Old GPUs pass `torch.cuda.is_available()` and then fail at kernel launch.**
   The NGC container needs sm_75+; always request `gpu_cap=compute_75`.
 
+## Literature scan (2026-08-16: RITM, SimpleClick, FocalClick, Xu 2016)
+
+What published interactive segmenters that reach 0.8+ actually do, and what it
+means for us:
+
+- **Disk click encoding is correct.** RITM's ablation found disks (r=2-5) beat
+  Euclidean distance maps. Our `clicks.encoding: distance` option is therefore
+  ruled out by published evidence and stays non-default.
+- **Every method uses an ImageNet-pretrained encoder** and SimpleClick credits
+  pretraining as the main factor. Asked supervisor whether an ImageNet
+  encoder inside our own UNet is within project rules.
+- **Target-centered crops beat raw resolution** (FocalClick runs at 128-256px
+  competitively). "What's in the pixels" matters more than "how many".
+- **Xu-style neighbour negatives** train the model that adjacent objects are
+  not the target — directly aimed at our mask-bleeding failure. Implemented
+  (`clicks.neighbor_negative_prob`).
+- Previous-mask-as-input + iterative training is what makes clicks 2+
+  converge (RITM). Candidate for later, compounds with crops.
+- Caveat: these train on COCO+LVIS (~1.5M instances); ADE20K is smaller and
+  stuff-heavy. Part of any gap to 0.9 is the dataset, not the code.
+
+## Current run config (third training run, per supervisor feedback)
+
+384x512 aspect-preserving input (was 128 square), depth-4 UNet (was 3),
+neighbour negatives at p=0.3, batch 32, lr 0.001, 3000 images (justified by
+the data ablation). Old checkpoints still load via a legacy key remap in
+`src/model/unet.py`; the predictor auto-detects checkpoint depth.
+
 ## Next steps
 
 1. **Rerun the notebook on the 10k results** and read the qualitative examples.

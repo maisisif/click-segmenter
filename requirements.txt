@@ -1,9 +1,10 @@
+# Everything needed to run the interactive app and to train the model.
+# Building the dataset from the Hugging Face mirror needs the extra packages in
+# requirements-data.txt, which most users will not want.
 numpy
 pillow
-matplotlib
-pyyaml
 scipy
+pyyaml
 torch
-datasets
-pyarrow
+matplotlib
 gradio

@@ -11,24 +11,37 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.data.ade20k import Instance, Sample, load_instance, load_sample
-from src.data.clicks import simulate_clicks
+from src.data.ade20k import Instance, Sample, load_instance, load_instance_mask, load_sample
+from src.data.clicks import Click, sample_positive_click, simulate_clicks
 from src.data.encoding import encode_clicks
+
+# Keys in clicks.yaml that configure rendering or the dataset itself, not the
+# click sampler. Everything else is forwarded to simulate_clicks.
+_NON_SAMPLER_KEYS = {"encoding", "radius", "max_distance", "neighbor_negative_prob"}
+
+
+def _normalize_size(size: int | tuple[int, int] | list[int]) -> tuple[int, int]:
+    """Accept a single int (square) or an (H, W) pair, return (H, W)."""
+    if isinstance(size, int):
+        return (size, size)
+    height, width = size
+    return (int(height), int(width))
 
 
 def _resize_image(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    return np.array(Image.fromarray(image).resize(size, Image.BILINEAR))
+    # `size` is (H, W); PIL wants (W, H).
+    return np.array(Image.fromarray(image).resize((size[1], size[0]), Image.BILINEAR))
 
 
 def _resize_mask(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    resized = Image.fromarray(mask.astype(np.uint8) * 255).resize(size, Image.NEAREST)
+    resized = Image.fromarray(mask.astype(np.uint8) * 255).resize((size[1], size[0]), Image.NEAREST)
     return np.array(resized) > 127
 
 
-def _index_cache_key(image_paths: list[Path], image_size: int) -> str:
+def _index_cache_key(image_paths: list[Path], image_size: tuple[int, int]) -> str:
     """Fingerprint of the exact inputs a cached index is valid for."""
     digest = hashlib.sha256()
-    digest.update(str(image_size).encode())
+    digest.update(str(tuple(image_size)).encode())
     for path in sorted(image_paths):
         digest.update(str(path).encode())
     return digest.hexdigest()
@@ -45,7 +58,7 @@ def _build_valid_index(
     slow enough (tens of thousands of small PNGs on shared storage) that the
     result is cached and keyed by the input paths and image size.
     """
-    key = _index_cache_key(image_paths, image_size[0])
+    key = _index_cache_key(image_paths, image_size)
 
     if cache_path is not None and cache_path.exists():
         try:
@@ -71,7 +84,7 @@ def _build_valid_index(
         if n % 500 == 0:
             print(f"  indexed {n}/{len(image_paths)} images, {len(items)} instances kept")
 
-    print(f"Instance index built: {len(items)} usable, {dropped} dropped as empty at {image_size[0]}px")
+    print(f"Instance index built: {len(items)} usable, {dropped} dropped as empty at {image_size}")
 
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,25 +103,29 @@ class ClickSegmentationDataset(Dataset):
         Fine for the handful of images we have locally, and needed for the
         overfit sanity check (`scripts/train.py`), which ranks instances by
         mask area to pick a cherry-picked subset.
-      - `lazy=True`: only reads the small sidecar JSON files up front to
-        enumerate (image_path, instance_id) pairs; each `__getitem__` call
-        loads and decodes just that one image + its instance masks, then lets
-        it be garbage-collected. Use this once the full ~27k-image dataset is
-        in play (M4+) to avoid holding everything in memory at once.
-        `mask_areas` isn't available in this mode (it would require decoding
-        every mask up front, defeating the purpose).
+      - `lazy=True`: builds (or loads) an index of usable (image, instance)
+        pairs, then decodes exactly one image + one mask per __getitem__.
+        Use this for real training so the full dataset never sits in memory.
+        `mask_areas` isn't available in this mode.
+
+    Neighbour negatives (Xu et al. 2016, strategy 2): with probability
+    `clicks.neighbor_negative_prob`, one extra negative click is placed on a
+    *different instance in the same image*. Without this, negative clicks only
+    ever land on nearby background, and the model is never explicitly taught
+    that the adjacent object is not the target — which shows up as masks
+    bleeding across instance boundaries.
     """
 
     def __init__(
         self,
         image_paths: list[Path],
-        image_size: int,
+        image_size: int | tuple[int, int] | list[int],
         click_config: dict,
         deterministic: bool = False,
         lazy: bool = False,
         index_cache: Path | None = None,
     ) -> None:
-        self.image_size = (image_size, image_size)
+        self.image_size = _normalize_size(image_size)
         self.click_config = click_config
         self.deterministic = deterministic
         self.lazy = lazy
@@ -116,6 +133,10 @@ class ClickSegmentationDataset(Dataset):
         if lazy:
             self.mask_areas = None
             self._lazy_items = _build_valid_index(image_paths, self.image_size, index_cache)
+            # Per-image list of instance ids, for neighbour-negative sampling.
+            self._ids_by_path: dict[Path, list[int]] = {}
+            for path, instance_id in self._lazy_items:
+                self._ids_by_path.setdefault(path, []).append(instance_id)
         else:
             self.items: list[tuple[Sample, Instance]] = []
             self.mask_areas: list[int] = []
@@ -143,6 +164,22 @@ class ClickSegmentationDataset(Dataset):
 
         return _resize_image(raw_image, self.image_size), _resize_mask(raw_mask, self.image_size)
 
+    def _neighbor_mask(self, idx: int, rng: np.random.Generator) -> np.ndarray | None:
+        """The resized mask of a randomly chosen *other* instance in this image."""
+        if self.lazy:
+            path, instance_id = self._lazy_items[idx]
+            others = [i for i in self._ids_by_path.get(path, []) if i != instance_id]
+            if not others:
+                return None
+            raw = load_instance_mask(path, others[rng.integers(len(others))])
+        else:
+            sample, instance = self.items[idx]
+            others = [i for i in sample.instances if i.id != instance.id]
+            if not others:
+                return None
+            raw = others[rng.integers(len(others))].mask_visible
+        return _resize_mask(raw, self.image_size)
+
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         # Both modes guarantee every indexed instance has a non-empty mask at
         # image_size, so no retry logic is needed here.
@@ -154,11 +191,19 @@ class ClickSegmentationDataset(Dataset):
         # sampled each epoch — acting as a natural form of augmentation.
         rng = np.random.default_rng(idx if self.deterministic else None)
 
-        # Split the click config: sampling parameters go to simulate_clicks,
-        # rendering parameters go to encode_clicks.
-        encoding_keys = {"encoding", "radius", "max_distance"}
-        simulate_kwargs = {k: v for k, v in self.click_config.items() if k not in encoding_keys}
+        simulate_kwargs = {k: v for k, v in self.click_config.items() if k not in _NON_SAMPLER_KEYS}
         clicks = simulate_clicks(mask, rng, **simulate_kwargs)
+
+        neighbor_prob = self.click_config.get("neighbor_negative_prob", 0.0)
+        if neighbor_prob > 0 and rng.random() < neighbor_prob:
+            neighbor = self._neighbor_mask(idx, rng)
+            if neighbor is not None:
+                # Never place the "not the target" click inside the target.
+                neighbor_only = neighbor & ~mask
+                if neighbor_only.any():
+                    click = sample_positive_click(neighbor_only, rng)
+                    clicks.append(Click(y=click.y, x=click.x, positive=False))
+
         encoded = encode_clicks(
             clicks,
             shape=mask.shape,

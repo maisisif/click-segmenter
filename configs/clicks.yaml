@@ -11,3 +11,8 @@ clicks:
   negative_min_distance: 5 # negative clicks must be at least this far outside the mask...
   negative_max_distance: 40 # ...and no farther than this (keeps them "nearby", not random)
   negative_prob: 0.5 # probability of adding a negative click alongside the mandatory positive one
+  # Probability of one extra negative click placed on a DIFFERENT instance in
+  # the same image (Xu et al. 2016, strategy 2). Background negatives never
+  # teach the model that the adjacent object is not the target; this does.
+  # Directly aimed at masks bleeding across instance boundaries.
+  neighbor_negative_prob: 0.3
