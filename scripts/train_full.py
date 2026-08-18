@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.ade20k import discover_samples
 from src.data.dataset import ClickSegmentationDataset
 from src.data.splits import split_image_paths
-from src.model.unet import UNet
+from src.model.build import build_model
 from src.training.checkpoints import load_checkpoint, save_checkpoint
 from src.training.device import get_device
 from src.training.losses import BCEDiceLoss
@@ -215,12 +215,7 @@ def main() -> None:
         f"val: {len(val_loader.dataset)}  (test built later)"
     )
 
-    model = UNet(
-        in_channels=5,
-        out_channels=1,
-        base_channels=train_config["model"]["base_channels"],
-        depth=train_config["model"].get("depth", 3),
-    ).to(device)
+    model = build_model(train_config["model"]).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training["lr"])
     criterion = BCEDiceLoss()
 

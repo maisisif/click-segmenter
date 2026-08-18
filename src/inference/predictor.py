@@ -23,7 +23,8 @@ from PIL import Image
 from src.data.clicks import Click
 from src.data.dataset import _normalize_size
 from src.data.encoding import encode_clicks
-from src.model.unet import UNet, migrate_legacy_state_dict
+from src.model.build import build_model, detect_arch
+from src.model.unet import migrate_legacy_state_dict
 from src.training.device import get_device
 
 
@@ -46,25 +47,16 @@ class ClickPredictor:
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = migrate_legacy_state_dict(checkpoint["model_state_dict"])
 
-        # Old checkpoints predate the depth option and are always depth 3;
-        # detect it from the weights rather than trusting the current config,
-        # so a config bumped to depth 4 can still load the released depth-3 model.
-        checkpoint_depth = 1 + max(
-            int(k.split(".")[1]) for k in state_dict if k.startswith("downs.")
-        )
-
-        self.model = UNet(
-            in_channels=5,
-            out_channels=1,
-            base_channels=train_config["model"]["base_channels"],
-            depth=checkpoint_depth,
-        ).to(self.device)
+        # Build whatever architecture the checkpoint was actually trained with,
+        # detected from its weights rather than trusted from the current config
+        # -- so the app loads any era of checkpoint without config surgery.
+        arch_config = {**train_config["model"], **detect_arch(state_dict)}
+        self.model = build_model(arch_config).to(self.device)
         self.model.load_state_dict(state_dict)
         self.model.eval()
 
-        # A depth-d model needs input divisible by 2**d; pad the configured
-        # size up if needed rather than failing.
-        divisor = 2**checkpoint_depth
+        # Pad the working size up to what the architecture divides by.
+        divisor = 32 if arch_config["arch"] == "resnet34_unet" else 2 ** arch_config["depth"]
         self.image_size = tuple(-(-s // divisor) * divisor for s in self.image_size)
 
         self.trained_epoch = checkpoint.get("epoch")

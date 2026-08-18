@@ -43,6 +43,27 @@ hostname -f
 nvidia-smi
 ls -d "$REPO" || { echo "FATAL: repo not found at $REPO"; exit 1; }
 
+# The resnet34_unet arch needs ImageNet weights. torch caches them under
+# TORCH_HOME, which must (a) live on shared storage so every node sees it and
+# (b) not depend on $HOME, which differs per node. Compute nodes often have no
+# internet, so if the cache is cold, fetch here only if we can; otherwise tell
+# the user to run the wget once on a frontend (frontends have internet).
+export TORCH_HOME="$HOME_DIR/.cache/torch"
+WEIGHTS="$TORCH_HOME/hub/checkpoints/resnet34-b627a593.pth"
+if [ ! -f "$WEIGHTS" ]; then
+    echo "ImageNet weights not cached, attempting download..."
+    mkdir -p "$(dirname "$WEIGHTS")"
+    wget -q -O "$WEIGHTS" https://download.pytorch.org/models/resnet34-b627a593.pth || {
+        rm -f "$WEIGHTS"
+        echo "FATAL: no cached weights and this node has no internet."
+        echo "Run this ONCE on a frontend (skirit), then resubmit:"
+        echo "  mkdir -p $TORCH_HOME/hub/checkpoints"
+        echo "  wget -O $WEIGHTS https://download.pytorch.org/models/resnet34-b627a593.pth"
+        exit 1
+    }
+fi
+echo "ImageNet weights: $(ls -la "$WEIGHTS" | awk '{print $5}') bytes"
+
 # PBS only copies its own .o file back when the job ends, which is useless for
 # watching a 12-hour run. Tee everything into the repo as well so progress can
 # be followed live with: tail -f ~/projects/click-segmenter/outputs/train.log
@@ -61,6 +82,7 @@ echo "=== Training ==="
 singularity exec --nv \
     --bind "$HOME_DIR:$HOME_DIR" \
     --bind "$SCRATCHDIR:$SCRATCHDIR" \
+    --env TORCH_HOME="$TORCH_HOME" \
     "$IMAGE" bash -c "
 set -euo pipefail
 cd '$REPO'

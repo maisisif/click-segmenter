@@ -7,13 +7,20 @@ seed: 0
 device: auto
 
 model:
+  # "unet" (from scratch) or "resnet34_unet" (ImageNet-pretrained encoder).
+  # Three controlled from-scratch experiments each moved test IoU by <= ~0.01
+  # (data x3.3: +0.005; more epochs: 0; 12x resolution + depth + neighbour
+  # clicks: +0.009), while every published 0.8+ method starts pretrained.
+  # This switch is the literature's main lever. Input must divide by 32.
+  arch: resnet34_unet
+  pretrained: true
+  # --- settings below apply to arch: unet only ---
   # Was 16, which measurably saturated: at base_channels 16 the overfit check
   # could memorize 3 instances to IoU 1.0000 but stalled at ~0.91 on 4. At 32
   # all 4 reach 1.0000 by epoch 500.
   base_channels: 32
-  # Downsampling stages (the last is the bottleneck). Was 3; raised to 4 with
-  # the larger input so the bottleneck still sees a comparable fraction of the
-  # image. Input height and width must divide by 2**depth.
+  # Downsampling stages (the last is the bottleneck). Input must divide by
+  # 2**depth.
   depth: 4
 
 data:
@@ -43,8 +50,10 @@ training:
   # 384x512 input is ~12x the pixels of 128 square, so the batch comes down
   # accordingly. The PBS job requests gpu_mem to avoid landing on a 16GB card.
   batch_size: 32
-  # Scaled back down with the batch size. ReduceLROnPlateau adjusts from here.
-  lr: 0.001
+  # Fine-tuning a pretrained encoder wants a gentler rate than training from
+  # scratch (0.001 would trample the ImageNet features before the click
+  # channels learn anything). ReduceLROnPlateau adjusts from here.
+  lr: 0.0003
   # Cap on how many images to use. Our own ablation showed tripling the data
   # moved test IoU by +0.0045, so training on the 3000-image subset at high
   # resolution is a measured trade, not a guess. Set null to use everything.
