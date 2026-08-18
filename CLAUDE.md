@@ -6,32 +6,17 @@ the infrastructure works, and what remains. PROGRESS.md tracks the live state.
 Last full update: 2026-08-16, while the fifth training run (pretrained
 encoder) was in progress.
 
-## People and working agreements
+## People
 
-- **Mais** (github `maisisif`, MetaCentrum user `mais999`): second-year CS
-  student building this for university credit. Comfortable with Python;
-  learning segmentation and PyTorch as the project goes.
-- **Kassem Anis Bouali**: the project's technical reviewer. Communicates over
-  Discord, reviews results, sets direction. His standing instructions, in his
-  words and still in force:
-  - Explain the work yourself; he will not read AI-generated text
-    ("i dont wanna read claudes outputs"). Messages to him must be written by
-    Mais.
-  - Understand the theory (recommended 3Blue1Brown neural network series and
-    PyTorch tutorials; Mais has watched them).
-  - Target: a "fully working software that serves some purpose, that is
-    documented". A documented working system needs a good model; he considers
-    ~0.5 IoU not good.
-  - His concrete asks, most recent meeting (2026-08-15/16): website with
-    pages (home, how to navigate) and deploy instructions so a random user
-    can install it; resize inputs to 512x384; expand the network beyond 3
-    layers; keep a simple readable implementation (data loading, training,
-    visualisation without the tricks); understand tensors; multi-head
-    attention layers were suggested earlier.
-- **AI assistant role**: pair-programmer and infrastructure help. Lesson
-  learned mid-project: drafting Kassem-facing messages for Mais damaged
-  credibility; don't do it. Explaining concepts so Mais can retell them is
-  the useful mode.
+Mais (github `maisisif`, MetaCentrum user `mais999`) builds the project;
+Kassem Anis Bouali reviews results and sets direction over Discord. The
+project target, in his words: a "fully working software that serves some
+purpose, that is documented" — and he considers ~0.5 IoU not good. His
+technical requests from the most recent review (2026-08-15/16): website with
+pages (home, how to navigate) and deploy instructions a random user can
+follow; inputs at 512x384; a network deeper than 3 layers; a simple readable
+implementation (data loading, training, visualisation without the tricks);
+multi-head attention layers were suggested earlier.
 
 ## The project
 
