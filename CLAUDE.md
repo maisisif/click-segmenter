@@ -24,10 +24,16 @@ Interactive object segmentation: user loads an image, clicks an object, the
 system returns a mask for that instance. Positive clicks select, negative
 clicks exclude. Model is trained by ourselves — the original rule was no
 pretrained SAM or off-the-shelf interactive segmenter as the core.
-**Note:** the fifth run uses an ImageNet-pretrained ResNet-34 *encoder* inside
-our own UNet. Whether that is inside or outside the "train it ourselves" rule
-has NOT been explicitly confirmed with Kassem; the question was drafted but
-Mais chose to run the experiment first. Raise it with him.
+**Confirmed 2026-08-19:** using an ImageNet-pretrained ResNet-34 *encoder*
+inside our own UNet is approved by Kassem ("that works fine, actually its a
+good idea") on the grounds that ImageNet contains relevant imagery. The ban
+covers pretrained SAM / off-the-shelf interactive segmenters, which we do not
+use.
+
+The decoder outputs a SINGLE mask: shape (batch, 1, H, W), sigmoid gives the
+per-pixel probability of belonging to the clicked object. (SAM by contrast
+emits several candidate masks per click to resolve ambiguity; adopting that
+would require a different loss and a UI for choosing. Not implemented.)
 
 Original milestone plan: M1 data loading, M2 click simulation, M3 overfit
 sanity check, M4 full training, M5 evaluation (IoU/Dice/NoC + SAM baseline),
@@ -110,7 +116,7 @@ README.md         quick start, usage, results table (numbers predate run 5)
 | 2 | same but 10k images | 0.5035 |
 | 3 | from scratch, 384x512, depth 4, neighbour negatives, 3k | 0.5125 |
 | 4 | (best val comparison for run 3) | val 0.5157 |
-| 5 | ResNet-34 pretrained encoder, 384x512, 3k — IN PROGRESS | best val 0.5699 @ epoch 37 (test pending) |
+| 5 | ResNet-34 pretrained encoder, 384x512, 3k | **0.5710** (best val 0.5699 @ ep 37, stopped ep 67) |
 
 Established by direct experiment (safe to rely on):
 
@@ -200,17 +206,17 @@ installed. The app runs locally on CPU:
 The predictor auto-detects checkpoint architecture, so old and new
 checkpoints both load.
 
-## Current run (5) — check on return
+## Run 5 outcome (completed 2026-08-16)
 
-ResNet34-UNet, 3k images, lr 3e-4 with plateau decay, batch 32. At the time
-of writing: epoch 64, best val 0.5699 at epoch 37, validation drifting
-below best while train reaches 0.77 — early stopping (patience 30) should
-end it around epoch 67, then test evaluation runs automatically and
-`outputs/history.json` gets the final summary. On completion: archive to
-`results/run-resnet34/`, update README results table and the notebook
-(note: the notebook's model-loading cell was patched for arch detection via
-`build.py`, but has only ever been executed against the 128px-era
-checkpoint; re-run it fully on the cluster against the new checkpoint).
+ResNet34-UNet, 3k images, lr 3e-4 with plateau decay, batch 32, ~230s/epoch
+on an A40. Early-stopped at epoch 67; best val 0.5699 at epoch 37; **test
+IoU 0.5710** on 5,709 instances. Test above validation — split integrity
+holds. Pretraining is the largest single factor measured in the project
+(+0.0585 over run 3's 0.5125); all from-scratch changes combined were
++0.0135. Train IoU reached 0.78 at stop, so a sizeable train/val gap
+remains — the motivation for the not-yet-run 12k retest. Checkpoint archived
+under `results/`; README results table and the notebook still show the
+128px-era numbers and need updating against this checkpoint.
 
 ## Outstanding work, in Kassem's priority order as understood
 
