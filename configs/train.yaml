@@ -14,6 +14,12 @@ model:
   # This switch is the literature's main lever. Input must divide by 32.
   arch: resnet34_unet
   pretrained: true
+  # SAM-style ambiguity handling. A single click can legitimately mean several
+  # things (shirt / torso / whole person), and one output has to average them.
+  # With 3, only the best-matching candidate is trained on each step, so they
+  # specialise; a small score head predicts each one's IoU and picks at
+  # inference. Set to 1 for the previous single-mask behaviour.
+  num_masks: 3
   # --- settings below apply to arch: unet only ---
   # Was 16, which measurably saturated: at base_channels 16 the overfit check
   # could memorize 3 instances to IoU 1.0000 but stalled at ~0.91 on 4. At 32
@@ -60,7 +66,7 @@ training:
   max_images: 3000
   lr_decay_factor: 0.5 # multiply lr by this when validation IoU plateaus
   lr_decay_patience: 8 # epochs without improvement before decaying
-  early_stopping_patience: 30 # epochs without improvement before stopping entirely
+  early_stopping_patience: 20 # epochs without improvement before stopping entirely
   num_workers: 16 # match ncpus in scripts/metacentrum/train.pbs; loading is the bottleneck
   history_path: outputs/history.json
 

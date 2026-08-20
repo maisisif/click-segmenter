@@ -47,6 +47,28 @@ class Up(nn.Module):
         return self.conv(x)
 
 
+class ScoreHead(nn.Module):
+    """Predicts each candidate mask's IoU from the bottleneck features.
+
+    At inference there is no ground truth, so something has to decide which
+    candidate to show. Picking the largest or most confident mask biases
+    towards over-segmentation; a learned score does better.
+    """
+
+    def __init__(self, in_channels: int, num_masks: int) -> None:
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(in_channels, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, num_masks),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
 class UNet(nn.Module):
     """UNet with a configurable number of downsampling stages.
 
@@ -54,12 +76,17 @@ class UNet(nn.Module):
     input height and width must both be divisible by 2**depth. Channel widths
     double each stage from `base_channels`: depth 3 at base 32 gives
     32-64-128-256, depth 4 adds a 512 bottleneck.
+
+    `num_masks` > 1 emits several candidate masks per click plus a predicted
+    IoU for each (see MultiMaskLoss for why).
+
+    forward returns (logits, scores); scores is None when num_masks == 1.
     """
 
     def __init__(
         self,
         in_channels: int = 5,
-        out_channels: int = 1,
+        num_masks: int = 1,
         base_channels: int = 32,
         depth: int = 3,
     ) -> None:
@@ -69,22 +96,27 @@ class UNet(nn.Module):
         channels = [base_channels * 2**i for i in range(depth + 1)]
 
         self.depth = depth
+        self.num_masks = num_masks
         self.stem = DoubleConv(in_channels, channels[0])
         self.downs = nn.ModuleList(Down(channels[i], channels[i + 1]) for i in range(depth))
         self.ups = nn.ModuleList(
             Up(channels[i + 1], channels[i], channels[i]) for i in reversed(range(depth))
         )
-        self.head = nn.Conv2d(channels[0], out_channels, kernel_size=1)
+        self.head = nn.Conv2d(channels[0], num_masks, kernel_size=1)
+        self.score_head = ScoreHead(channels[-1], num_masks) if num_masks > 1 else None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         skips = []
         x = self.stem(x)
         for down in self.downs:
             skips.append(x)
             x = down(x)
+
+        scores = self.score_head(x) if self.score_head is not None else None
+
         for up, skip in zip(self.ups, reversed(skips)):
             x = up(x, skip)
-        return self.head(x)
+        return self.head(x), scores
 
 
 # Checkpoints saved before depth was configurable used fixed layer names

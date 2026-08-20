@@ -27,7 +27,7 @@ import torch
 from torch import nn
 from torchvision.models import ResNet34_Weights, resnet34
 
-from src.model.unet import DoubleConv, Up
+from src.model.unet import DoubleConv, ScoreHead, Up
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -37,9 +37,16 @@ class ResNetUNet(nn.Module):
     """Encoder: pretrained ResNet-34 (stages /2 to /32). Decoder: plain UNet ups.
 
     Input height and width must be divisible by 32.
+
+    forward returns (logits, scores); scores is None when num_masks == 1.
     """
 
-    def __init__(self, in_channels: int = 5, out_channels: int = 1, pretrained: bool = True) -> None:
+    def __init__(
+        self,
+        in_channels: int = 5,
+        num_masks: int = 1,
+        pretrained: bool = True,
+    ) -> None:
         super().__init__()
         backbone = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1 if pretrained else None)
 
@@ -65,12 +72,15 @@ class ResNetUNet(nn.Module):
         self.up4 = Up(64, 64, 32)     # -> /2
         self.final_up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
         self.final_conv = DoubleConv(32, 16)
-        self.head = nn.Conv2d(16, out_channels, kernel_size=1)
+        self.head = nn.Conv2d(16, num_masks, kernel_size=1)
+        self.num_masks = num_masks
+        # 512 = ResNet-34 layer4 output channels.
+        self.score_head = ScoreHead(512, num_masks) if num_masks > 1 else None
 
         self.register_buffer("rgb_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1))
         self.register_buffer("rgb_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         rgb = (x[:, :3] - self.rgb_mean) / self.rgb_std
         x = torch.cat([rgb, x[:, 3:]], dim=1)
 
@@ -80,8 +90,10 @@ class ResNetUNet(nn.Module):
         s3 = self.layer3(s2)                      # /16, 256
         bottom = self.layer4(s3)                  # /32, 512
 
+        scores = self.score_head(bottom) if self.score_head is not None else None
+
         d = self.up1(bottom, s3)
         d = self.up2(d, s2)
         d = self.up3(d, s1)
         d = self.up4(d, s0)
-        return self.head(self.final_conv(self.final_up(d)))
+        return self.head(self.final_conv(self.final_up(d))), scores

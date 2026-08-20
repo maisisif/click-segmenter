@@ -25,6 +25,7 @@ from src.data.dataset import _normalize_size
 from src.data.encoding import encode_clicks
 from src.model.build import build_model, detect_arch
 from src.model.unet import migrate_legacy_state_dict
+from src.training.metrics import select_masks
 from src.training.device import get_device
 
 
@@ -59,6 +60,7 @@ class ClickPredictor:
         divisor = 32 if arch_config["arch"] == "resnet34_unet" else 2 ** arch_config["depth"]
         self.image_size = tuple(-(-s // divisor) * divisor for s in self.image_size)
 
+        self.num_masks = arch_config["num_masks"]
         self.trained_epoch = checkpoint.get("epoch")
         self.trained_val_iou = checkpoint.get("best_val_iou")
 
@@ -104,8 +106,10 @@ class ClickPredictor:
         model_input = torch.from_numpy(np.concatenate([image_chw, encoded], axis=0)).float()
 
         with torch.no_grad():
-            logits = self.model(model_input.unsqueeze(0).to(self.device))
-            probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
+            logits, scores = self.model(model_input.unsqueeze(0).to(self.device))
+            # A multi-mask model offers several interpretations of the click
+            # (e.g. shirt / torso / person); the score head picks one.
+            probs = torch.sigmoid(select_masks(logits, scores))[0, 0].cpu().numpy()
 
         # Back to the user's resolution. The probability map is resized rather
         # than the thresholded mask, so the boundary is interpolated smoothly

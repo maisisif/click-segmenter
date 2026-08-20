@@ -30,10 +30,25 @@ good idea") on the grounds that ImageNet contains relevant imagery. The ban
 covers pretrained SAM / off-the-shelf interactive segmenters, which we do not
 use.
 
-The decoder outputs a SINGLE mask: shape (batch, 1, H, W), sigmoid gives the
-per-pixel probability of belonging to the clicked object. (SAM by contrast
-emits several candidate masks per click to resolve ambiguity; adopting that
-would require a different loss and a UI for choosing. Not implemented.)
+**Multi-mask output, added 2026-08-19** (`model.num_masks: 3`). The decoder
+emits M candidate masks per click plus a small score head predicting each
+one's IoU. `MultiMaskLoss` back-propagates only through the best-matching
+candidate, so candidates specialise on different readings of an ambiguous
+click (shirt / torso / person) instead of averaging. At inference
+`select_masks` picks by predicted score. Metrics report BOTH the selected IoU
+(comparable with all earlier runs) and best-of-N (an oracle upper bound; the
+gap between them measures how much the score head is losing). `num_masks: 1`
+reproduces the old single-mask behaviour exactly, and `MultiMaskLoss` reduces
+to BCE+Dice in that case.
+
+Decided against a fixed per-class or per-slot output tensor after measuring
+the dataset (`scripts/analyze_dataset.py`, run on all 12,003 images):
+240,671 objects, 2,041 classes, median 16 objects/image, max 275, and
+**63.8% of objects share their class with another object in the same image**
+— so one channel per class would make roughly two-thirds of objects
+individually unselectable. Top 150 classes cover only 91% of objects. One
+channel per object slot would need 275 channels for the largest image and
+reintroduces the ordering problem.
 
 Original milestone plan: M1 data loading, M2 click simulation, M3 overfit
 sanity check, M4 full training, M5 evaluation (IoU/Dice/NoC + SAM baseline),

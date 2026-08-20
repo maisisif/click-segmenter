@@ -28,8 +28,8 @@ from src.data.dataset import ClickSegmentationDataset
 from src.model.build import build_model
 from src.training.checkpoints import load_checkpoint, save_checkpoint
 from src.training.device import get_device
-from src.training.losses import BCEDiceLoss
-from src.training.metrics import iou_score
+from src.training.losses import MultiMaskLoss
+from src.training.metrics import iou_score, select_masks
 
 
 def main() -> None:
@@ -109,7 +109,7 @@ def main() -> None:
 
     model = build_model(train_config["model"]).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=overfit_config["lr"])
-    criterion = BCEDiceLoss()
+    criterion = MultiMaskLoss()
 
     start_epoch = 1
     if args.resume:
@@ -121,7 +121,8 @@ def main() -> None:
 
     model.eval()
     with torch.no_grad():
-        initial_pred = torch.sigmoid(model(inputs))
+        initial_logits, initial_scores = model(inputs)
+        initial_pred = torch.sigmoid(select_masks(initial_logits, initial_scores))
 
     model.train()
     epochs = overfit_config["epochs"]
@@ -140,12 +141,12 @@ def main() -> None:
 
     for epoch in range(start_epoch, epochs + 1):
         optimizer.zero_grad()
-        logits = model(inputs)
-        loss = criterion(logits, targets)
+        logits, scores = model(inputs)
+        loss = criterion(logits, targets, scores)
         loss.backward()
         optimizer.step()
 
-        epoch_iou = iou_score(logits.detach(), targets)
+        epoch_iou = iou_score(logits.detach(), targets, scores=scores.detach() if scores is not None else None)
         if epoch_iou > best_iou:
             best_iou, best_epoch = epoch_iou, epoch
             save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, loss.item())
@@ -158,9 +159,9 @@ def main() -> None:
 
     model.eval()
     with torch.no_grad():
-        final_logits = model(inputs)
-        final_pred = torch.sigmoid(final_logits)
-    final_iou = iou_score(final_logits, targets)
+        final_logits, final_scores = model(inputs)
+        final_pred = torch.sigmoid(select_masks(final_logits, final_scores))
+    final_iou = iou_score(final_logits, targets, scores=final_scores)
     print(f"Final overfit IoU on the {len(subset)}-example subset: {final_iou:.4f}")
     print(f"Best training IoU: {best_iou:.4f} (epoch {best_epoch}, saved to {checkpoint_dir / 'best.pt'})")
     if final_iou < best_iou - 0.05:

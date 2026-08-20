@@ -41,8 +41,8 @@ from src.data.splits import split_image_paths
 from src.model.build import build_model
 from src.training.checkpoints import load_checkpoint, save_checkpoint
 from src.training.device import get_device
-from src.training.losses import BCEDiceLoss
-from src.training.metrics import iou_score
+from src.training.losses import MultiMaskLoss
+from src.training.metrics import best_of_n_iou, iou_score
 
 
 def build_loader(
@@ -88,17 +88,19 @@ def run_epoch(
     criterion: torch.nn.Module,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     """One pass over `loader`. Trains if an optimizer is given, else evaluates.
 
-    Returns (mean loss, mean IoU), both averaged per sample rather than per
-    batch so a smaller final batch doesn't skew the numbers.
+    Returns (mean loss, mean selected IoU, mean best-of-N IoU), all averaged
+    per sample rather than per batch so a smaller final batch doesn't skew the
+    numbers. For a single-mask model the two IoUs are identical.
     """
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
     total_loss = 0.0
     total_iou = 0.0
+    total_best = 0.0
     total_samples = 0
 
     with torch.set_grad_enabled(is_train):
@@ -109,18 +111,25 @@ def run_epoch(
             if is_train:
                 optimizer.zero_grad()
 
-            logits = model(inputs)
-            loss = criterion(logits, targets)
+            logits, scores = model(inputs)
+            loss = criterion(logits, targets, scores)
 
             if is_train:
                 loss.backward()
                 optimizer.step()
 
+            detached = logits.detach()
+            detached_scores = scores.detach() if scores is not None else None
             total_loss += loss.item() * batch_size
-            total_iou += iou_score(logits.detach(), targets) * batch_size
+            total_iou += iou_score(detached, targets, scores=detached_scores) * batch_size
+            total_best += best_of_n_iou(detached, targets) * batch_size
             total_samples += batch_size
 
-    return total_loss / total_samples, total_iou / total_samples
+    return (
+        total_loss / total_samples,
+        total_iou / total_samples,
+        total_best / total_samples,
+    )
 
 
 def main() -> None:
@@ -217,7 +226,7 @@ def main() -> None:
 
     model = build_model(train_config["model"]).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=training["lr"])
-    criterion = BCEDiceLoss()
+    criterion = MultiMaskLoss()
 
     # Drop the learning rate when validation IoU stops improving. Adam alone
     # bounces around the minimum at a fixed rate; decaying on plateau lets it
@@ -266,8 +275,8 @@ def main() -> None:
 
     for epoch in range(start_epoch, epochs + 1):
         started = time.time()
-        train_loss, train_iou = run_epoch(model, train_loader, criterion, device, optimizer)
-        val_loss, val_iou = run_epoch(model, val_loader, criterion, device)
+        train_loss, train_iou, _ = run_epoch(model, train_loader, criterion, device, optimizer)
+        val_loss, val_iou, val_best = run_epoch(model, val_loader, criterion, device)
         elapsed = time.time() - started
 
         lr_now = optimizer.param_groups[0]["lr"]
@@ -280,6 +289,7 @@ def main() -> None:
                 "train_iou": train_iou,
                 "val_loss": val_loss,
                 "val_iou": val_iou,
+                "val_best_of_n_iou": val_best,
                 "lr": lr_now,
                 "seconds": elapsed,
             }
@@ -307,8 +317,9 @@ def main() -> None:
         print(
             f"epoch {epoch:3d}/{epochs}  "
             f"train loss={train_loss:.4f} IoU={train_iou:.4f}  |  "
-            f"val loss={val_loss:.4f} IoU={val_iou:.4f}  "
-            f"lr={lr_now:.2e}  ({elapsed:.0f}s){marker}"
+            f"val loss={val_loss:.4f} IoU={val_iou:.4f}"
+            + (f" (best-of-N {val_best:.4f})" if val_best > val_iou + 1e-6 else "")
+            + f"  lr={lr_now:.2e}  ({elapsed:.0f}s){marker}"
         )
         save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, train_loss, state)
 
@@ -332,14 +343,19 @@ def main() -> None:
     print("Evaluating best checkpoint on the held-out test split...")
     load_checkpoint(checkpoint_dir / "best.pt", model, optimizer, device)
     test_loader = build_loader(splits["test"], train_config, click_config, shuffle=False, deterministic=True, split_name="test")
-    test_loss, test_iou = run_epoch(model, test_loader, criterion, device)
-    print(f"Test loss={test_loss:.4f}  Test IoU={test_iou:.4f}  ({len(test_loader.dataset)} instances)")
+    test_loss, test_iou, test_best = run_epoch(model, test_loader, criterion, device)
+    print(
+        f"Test loss={test_loss:.4f}  Test IoU={test_iou:.4f}"
+        + (f"  (best-of-N {test_best:.4f})" if test_best > test_iou + 1e-6 else "")
+        + f"  ({len(test_loader.dataset)} instances)"
+    )
 
     summary = {
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
         "test_loss": test_loss,
         "test_iou": test_iou,
+        "test_best_of_n_iou": test_best,
         "splits": {name: len(paths) for name, paths in splits.items()},
         "history": history,
     }

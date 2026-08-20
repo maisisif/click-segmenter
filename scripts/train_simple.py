@@ -76,7 +76,8 @@ def main() -> None:
     val_loader = DataLoader(val_set, batch_size=args.batch_size)
 
     # 4. Model, loss, optimizer.
-    model = UNet(in_channels=5, out_channels=1, base_channels=32, depth=3).to(device)
+    # num_masks=1 keeps this file simple: one click in, one mask out.
+    model = UNet(in_channels=5, num_masks=1, base_channels=32, depth=3).to(device)
     criterion = BCEDiceLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -87,7 +88,8 @@ def main() -> None:
         for inputs, targets in train_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(inputs), targets)
+            logits, _ = model(inputs)   # models return (masks, scores); scores is None here
+            loss = criterion(logits, targets)
             loss.backward()
             optimizer.step()
             train_loss += loss.item() * len(inputs)
@@ -97,7 +99,8 @@ def main() -> None:
         with torch.no_grad():
             for inputs, targets in val_loader:
                 inputs, targets = inputs.to(device), targets.to(device)
-                val_iou += iou_score(model(inputs), targets) * len(inputs)
+                logits, _ = model(inputs)
+                val_iou += iou_score(logits, targets) * len(inputs)
 
         print(
             f"epoch {epoch:2d}/{args.epochs}  "
@@ -112,7 +115,8 @@ def main() -> None:
     for row in range(n):
         inputs, target = val_set[row]
         with torch.no_grad():
-            pred = torch.sigmoid(model(inputs.unsqueeze(0).to(device)))[0, 0].cpu() > 0.5
+            logits, _ = model(inputs.unsqueeze(0).to(device))
+            pred = torch.sigmoid(logits)[0, 0].cpu() > 0.5
 
         axes[row][0].imshow(inputs[:3].permute(1, 2, 0))
         axes[row][0].contour(inputs[3], colors="lime")   # positive click
