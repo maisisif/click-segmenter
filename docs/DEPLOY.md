@@ -106,6 +106,20 @@ python scripts/export_model.py \
 
 It prints both file sizes and refuses to write a checkpoint it cannot load back.
 
+It also prints the input resolution it embedded and where that came from. Read
+that line. Checkpoints from before this was recorded in training take their
+resolution from `configs/train.yaml`, which describes what the repo trains
+*today* — and the network is fully convolutional, so a checkpoint trained at
+128x128 exported as 384x512 loads, predicts, and is quietly worse with nothing
+to indicate why. If the export warns, pass the size the run actually used:
+
+```bash
+python scripts/export_model.py --checkpoint results/run-3000-images/best.pt \
+  --image-size 128 128 --output outputs/export/click-segmenter.pt
+```
+
+Checkpoints written from now on record their own settings and need no override.
+
 ### Upload the weights
 
 ```bash
