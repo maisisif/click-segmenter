@@ -1,261 +1,310 @@
 # CLAUDE.md — project context for continuing this work
 
 Read this file plus PROGRESS.md at the start of every session. This file holds
-the stable facts: what the project is, what has been built and measured, how
-the infrastructure works, and what remains. PROGRESS.md tracks the live state.
-Last full update: 2026-08-16, while the fifth training run (pretrained
-encoder) was in progress.
+the stable facts: what the project is, what has been built and measured, how to
+operate the infrastructure, and what remains.
 
-## People
+Last updated: 2026-08-21.
 
-Mais (github `maisisif`, MetaCentrum user `mais999`) builds the project;
-Kassem Anis Bouali reviews results and sets direction over Discord. The
-project target, in his words: a "fully working software that serves some
-purpose, that is documented" — and he considers ~0.5 IoU not good. His
-technical requests from the most recent review (2026-08-15/16): website with
-pages (home, how to navigate) and deploy instructions a random user can
-follow; inputs at 512x384; a network deeper than 3 layers; a simple readable
-implementation (data loading, training, visualisation without the tricks);
-multi-head attention layers were suggested earlier.
+---
+
+## THE COMMANDS (copy these, do not improvise)
+
+Everything runs in one of two places. Check with `hostname`: `skirit...` is the
+cluster, anything else is the laptop.
+
+### Cluster (OnDemand -> Clusters -> Skirit Shell Access)
+
+**Start or continue a training run.** The `&&` chain matters: a job snapshots
+the code when it launches, so pulling *after* qsub silently runs stale code.
+This has cost two full 12-hour runs.
+
+```bash
+cd ~/projects/click-segmenter && git pull && qsub scripts/metacentrum/train.pbs && qstat -u $USER
+```
+
+**Check on it.** `Q` queued, `R` running, absent means finished or died.
+
+```bash
+qstat -u $USER
+tail -20 ~/projects/click-segmenter/outputs/train.log
+```
+
+**Full history across resumed jobs** (train.log only covers the current job):
+
+```bash
+cd ~/projects/click-segmenter && python3 -c "
+import json
+h = json.load(open('outputs/history.json'))
+h = h['history'] if isinstance(h, dict) else h
+for e in h[-15:]:
+    print(f\"epoch {e['epoch']:3d} train {e['train_iou']:.4f} val {e['val_iou']:.4f} \"
+          f\"train_loss {e['train_loss']:.4f} val_loss {e['val_loss']:.4f}\")
+print('best val:', max(e['val_iou'] for e in h))
+"
+```
+
+**Before starting a NEW experiment** (different architecture, data or size).
+Skipping the rm makes --auto-resume load a checkpoint that no longer matches
+the model, which either crashes or silently trains the wrong thing.
+
+```bash
+cd ~/projects/click-segmenter
+mkdir -p results/run-NAME && cp outputs/checkpoints/best.pt outputs/history.json results/run-NAME/
+rm -rf outputs/checkpoints outputs/history.json
+# add this too if the image set or image_size changed:
+rm -f outputs/instance_index_*.json
+```
+
+**After a walltime kill** (job gone, log has no "Early stopping" line): just
+resubmit, `--auto-resume` continues from `latest.pt` with optimizer, scheduler,
+best score and history intact.
+
+**Other jobs.**
+
+```bash
+qsub scripts/metacentrum/export_data.pbs   # build dataset from HF mirror
+qsub scripts/metacentrum/app.pbs           # Gradio demo, CPU only
+grep gradio.live outputs/app.log           # read the public URL once it starts
+qdel <jobid>                               # cancel
+```
+
+**Measure the dataset** (fast, JSON only):
+
+```bash
+cd ~/projects/click-segmenter && python3 scripts/analyze_dataset.py \
+  --data-root /storage/brno2/home/$USER/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE
+```
+
+**Git hygiene on the cluster.** Running the notebook or editing configs dirties
+the checkout and blocks `git pull`. The cluster clone is read-only in spirit;
+all commits happen on the laptop.
+
+```bash
+git checkout -- configs/train.yaml notebooks/results.ipynb   # discard local edits
+```
+
+### Laptop
+
+```bash
+cd ~/projects/click-segmenter
+git add -A && git commit -m "message" && git push origin main
+
+source .venv/bin/activate
+python scripts/train.py --device cpu --subset-size 4    # overfit check, must reach IoU ~1.0
+python scripts/app.py --checkpoint ~/Downloads/best.pt --device cpu   # add --share for a public link
+```
+
+Checkpoints come down via OnDemand -> Files -> /storage/brno2 -> projects ->
+click-segmenter -> outputs/checkpoints (or results/run-*/).
+
+### Two failure modes that keep recurring
+
+1. **Double submission.** After any `qsub`, run `qstat -u $USER` before
+   pressing anything else. Two jobs writing the same checkpoints corrupt each
+   other.
+2. **Wrong terminal.** `qsub`/`qstat` exist only on the frontend, never inside
+   the Jupyter container or on the laptop. `hostname` settles it.
+
+---
 
 ## The project
 
-Interactive object segmentation: user loads an image, clicks an object, the
-system returns a mask for that instance. Positive clicks select, negative
-clicks exclude. Model is trained by ourselves — the original rule was no
-pretrained SAM or off-the-shelf interactive segmenter as the core.
-**Confirmed 2026-08-19:** using an ImageNet-pretrained ResNet-34 *encoder*
-inside our own UNet is approved by Kassem ("that works fine, actually its a
-good idea") on the grounds that ImageNet contains relevant imagery. The ban
-covers pretrained SAM / off-the-shelf interactive segmenters, which we do not
-use.
+Interactive object segmentation: the user loads an image, clicks an object, and
+the system returns a mask for that instance. Positive clicks select, negative
+clicks exclude. The model is trained by us; no pretrained SAM or off-the-shelf
+interactive segmenter is used.
 
-**Multi-mask output, added 2026-08-19** (`model.num_masks: 3`). The decoder
-emits M candidate masks per click plus a small score head predicting each
-one's IoU. `MultiMaskLoss` back-propagates only through the best-matching
-candidate, so candidates specialise on different readings of an ambiguous
-click (shirt / torso / person) instead of averaging. At inference
-`select_masks` picks by predicted score. Metrics report BOTH the selected IoU
-(comparable with all earlier runs) and best-of-N (an oracle upper bound; the
-gap between them measures how much the score head is losing). `num_masks: 1`
-reproduces the old single-mask behaviour exactly, and `MultiMaskLoss` reduces
-to BCE+Dice in that case.
+**Confirmed 2026-08-19:** an ImageNet-pretrained ResNet-34 *encoder* inside our
+own UNet is approved by Kassem ("that works fine, actually its a good idea").
 
-Decided against a fixed per-class or per-slot output tensor after measuring
-the dataset (`scripts/analyze_dataset.py`, run on all 12,003 images):
-240,671 objects, 2,041 classes, median 16 objects/image, max 275, and
-**63.8% of objects share their class with another object in the same image**
-— so one channel per class would make roughly two-thirds of objects
-individually unselectable. Top 150 classes cover only 91% of objects. One
-channel per object slot would need 275 channels for the largest image and
-reintroduces the ordering problem.
+Milestones: M1 data loading, M2 click simulation, M3 overfit check, M4 full
+training, M5 evaluation (Dice/NoC/SAM baseline), M6 interactive UI, M7 polish.
+M1-M4 done, M6 mostly, M5 barely (IoU only), M7 partial. Future extension to
+design for: scene object graphs consuming segmentation output —
+`src/inference/predictor.py` is the intended interface.
 
-Original milestone plan: M1 data loading, M2 click simulation, M3 overfit
-sanity check, M4 full training, M5 evaluation (IoU/Dice/NoC + SAM baseline),
-M6 interactive UI, M7 polish/README. M1-M4 done, M6 mostly done, M5 barely
-started (IoU only), M7 partially (README exists; website pages and deploy
-docs do not). Future extension kept in mind: scene object graphs consuming
-the segmentation output (`src/inference/predictor.py` is the intended
-interface for that).
+## People
 
-## Repository state (github.com/maisisif/click-segmenter, branch main)
+Mais (github `maisisif`, MetaCentrum `mais999`) builds it; Kassem Anis Bouali
+reviews over Discord. Target in his words: "fully working software that serves
+some purpose, that is documented"; he considers ~0.5 IoU not good. Outstanding
+requests: website with pages (home, how to navigate) and deploy instructions a
+random user can follow; multi-head attention layers; migrate the repo to a
+GitLab he created, with no `.claude` or AI folders in it.
+
+## How the model works (for explaining it)
+
+The input is **5 channels**: RGB plus two click maps (a disk of radius 5 marks
+positive clicks, another marks negatives). So an image clicked on the chair and
+the same image clicked on the lamp are *different inputs* with one correct
+answer each — the click is what identifies the object, which is why one image
+yields ~20 training examples rather than one.
+
+The output is **3 candidate masks** plus a predicted IoU for each. Training
+back-propagates only through the best-matching candidate, so the three
+specialise on different readings of an ambiguous click (shirt / torso / whole
+person) instead of averaging them. At inference the score head picks one.
+
+Loss is BCE + Dice. Splitting is by **image**, never by instance, because two
+objects from one photo in different splits would leak memorised scenes into
+validation.
+
+## Repository layout
 
 ```
-configs/
-  data.yaml         dataset root (uses ~; see $HOME warning below)
-  clicks.yaml       click simulation + encoding params
-  train.yaml        model arch/size, training, checkpoint settings
-src/
-  data/ade20k.py    discover_samples, load_sample (all masks), load_instance
-                    (one image+mask), load_instance_mask (one mask only)
-  data/dataset.py   ClickSegmentationDataset: eager or lazy, cached instance
-                    index, neighbour-negative clicks, (H,W) sizes
-  data/clicks.py    click simulation from GT masks (interior positives,
-                    boundary-band negatives)
-  data/encoding.py  clicks -> 2 extra channels; disk (default) or distance
-  data/splits.py    70/20/10 split BY IMAGE, deterministic, order-independent
-  model/unet.py     from-scratch UNet, configurable depth; legacy checkpoint
-                    key migration (migrate_legacy_state_dict)
-  model/resnet_unet.py  ResNet-34 ImageNet-pretrained encoder + UNet decoder;
-                    click channels zero-initialised; ImageNet normalisation
-                    inside the model
-  model/build.py    build_model(config), detect_arch(state_dict) — the app and
-                    notebook load any era of checkpoint via this
-  training/         losses (BCE+Dice), metrics (IoU), checkpoints (atomic
-                    save, full-state resume), device selection
-  inference/predictor.py  ClickPredictor: full-res image + clicks in original
-                    coordinates -> mask at original resolution
-scripts/
-  app.py            Gradio app (single page: click type, threshold, status)
-  train.py          M3 overfit sanity check (CLI overrides for diagnostics)
-  train_full.py     real training: splits, per-epoch val, best-checkpoint by
-                    val IoU, ReduceLROnPlateau, early stopping (patience 30),
-                    --auto-resume across walltime kills, history.json every
-                    epoch, test evaluated once at the end
-  train_simple.py   the whole pipeline in one readable file (Kassem's
-                    "simple implementation" ask) — for understanding, not runs
-  export_ade20k.py  HF mirror parquet -> on-disk toolkit layout
-  metacentrum/      PBS jobs: train.pbs, export_data.pbs, app.pbs (CPU),
-                    hello_gpu.pbs, setup_env.sh (legacy, container made it moot)
-notebooks/results.ipynb  curves, baseline comparison, qualitative examples
-results/          archived history.json + best.pt per finished run
-requirements.txt  runtime deps; requirements-data.txt adds datasets/pyarrow
-README.md         quick start, usage, results table (numbers predate run 5)
+configs/            data.yaml (dataset root), clicks.yaml (click sim +
+                    encoding), train.yaml (model, training, checkpoints)
+src/data/           ade20k.py (discover_samples, load_sample = all masks,
+                      load_instance = one image+mask, load_instance_mask)
+                    dataset.py (eager/lazy, cached instance index, neighbour
+                      negatives, (H,W) sizes)
+                    clicks.py, encoding.py (disk default, distance available)
+                    splits.py (70/20/10 by image, deterministic)
+src/model/          unet.py (from-scratch, configurable depth, ScoreHead,
+                      legacy checkpoint key migration)
+                    resnet_unet.py (ImageNet ResNet-34 encoder, click channels
+                      zero-initialised, ImageNet norm inside the model)
+                    build.py (build_model from config, detect_arch from weights)
+src/training/       losses.py (BCEDiceLoss, MultiMaskLoss), metrics.py
+                    (iou_score, best_of_n_iou, select_masks), checkpoints.py
+                    (atomic save, full-state resume), device.py
+src/inference/      predictor.py (full-res image + clicks -> mask)
+scripts/            app.py (Gradio), train.py (M3 overfit check),
+                    train_full.py (real training), train_simple.py (readable
+                    walkthrough version), export_ade20k.py, analyze_dataset.py,
+                    metacentrum/*.pbs
+notebooks/          results.ipynb (curves, baselines, examples)
+results/            archived history.json + best.pt per finished run
 ```
 
 ## Data
 
-- Official ADE20K registration was broken; dataset built from the Hugging
-  Face mirror `1aurent/ADE20K` (full 2021 release, parquet). COCO and PSG
-  were considered and ruled out by Kassem.
-- Exported to MetaCentrum at
-  `/storage/brno2/home/mais999/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE`:
-  **12,003 images** (10,000 train split + 2,000 val split + 3 original
-  samples), ~340k instance masks. Verified: mask PNGs use exactly
-  {0, 128, 255} (0 background, 128 occluded, 255 visible); `objects[i].id`
-  aligns 1:1 with the instances sequence; some `parts` fields are null
-  (export handles this; one malformed row must not abort an export — it
-  skips and logs).
-- Training uses the visible mask (`arr == 255`). Splitting is always by
-  image, never by instance (instances from one image in different splits
-  would leak memorised scenes into validation).
-- `training.max_images: 3000` subsamples deterministically; the 12k are on
-  disk. Instance indexes are cached in `outputs/instance_index_*.json`,
-  keyed by image list + size; they rebuild automatically when inputs change.
+Official ADE20K registration was broken; the dataset is built from the Hugging
+Face mirror `1aurent/ADE20K`. COCO and PSG were ruled out by Kassem.
 
-## Experimental record (all numbers are held-out test IoU unless stated)
+On the cluster at
+`/storage/brno2/home/mais999/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE`.
 
-| # | Setup | Test IoU |
-|---|-------|----------|
+Measured with `scripts/analyze_dataset.py` over all 12,003 images:
+
+- 12,003 images (10,000 train split + 2,000 val split + 3 samples)
+- **240,671 objects**, **2,041 distinct classes**
+- objects per image: min 2, median 16, mean 20.1, max 275 (95th pct 49)
+- **63.8% of objects share their class with another object in the same image**
+- top 150 classes cover 91% of objects; top 300 cover 96.2%
+- mask PNGs use exactly {0, 128, 255} = background / occluded / visible;
+  `objects[i].id` aligns 1:1 with the instances sequence; some `parts` fields
+  are null (the export handles this and skips malformed rows rather than
+  aborting)
+
+Training uses the visible mask (`arr == 255`).
+
+## Experimental record (held-out test IoU unless noted)
+
+| # | Setup | Result |
+|---|-------|--------|
 | 1 | from scratch, 128px sq, depth 3, base 32, 3k images | 0.4990 |
-| 2 | same but 10k images | 0.5035 |
+| 2 | same, 10k images | 0.5035 |
 | 3 | from scratch, 384x512, depth 4, neighbour negatives, 3k | 0.5125 |
-| 4 | (best val comparison for run 3) | val 0.5157 |
-| 5 | ResNet-34 pretrained encoder, 384x512, 3k | **0.5710** (best val 0.5699 @ ep 37, stopped ep 67) |
+| 4 | ResNet-34 pretrained encoder, 384x512, 3k | **0.5710** |
+| 5 | same, 12k images (walltime-killed before test eval) | val 0.6175 |
+| 6 | + 3 candidate masks with score head | in progress |
 
-Established by direct experiment (safe to rely on):
+Established by direct experiment:
 
-- **lr 0.003 was unstable** (deterministic collapse ~epoch 587 in the overfit
-  test); 0.001 stable. Overfit test passes: 4 instances memorised to IoU
-  1.0000 (requires base_channels >= 32; 16 saturates at ~0.91).
+- **lr 0.003 is unstable** (deterministic collapse ~epoch 587 in the overfit
+  test); 0.001 stable. Overfit check passes at IoU 1.0000 with
+  base_channels >= 32; at 16 it stalls at ~0.91.
 - **Data volume was not the from-scratch bottleneck**: 3.3x images gained
-  +0.0045. (Caveat: measured on the from-scratch model only. With the
-  pretrained encoder and its larger train/val gap, retesting with
-  `--max-images 0` is a reasonable, not-yet-run experiment.)
-- **More epochs do not help** past the plateau; validation flattens ~epoch
-  30-37 in every run while train IoU keeps climbing (overfitting gap).
-- **Resolution + depth + neighbour negatives combined**: +0.009 (run 3 vs 2;
-  three changes at once, individually unattributed).
-- **Pretrained encoder**: the largest single improvement so far (+~0.05 val
-  over run 3's best; final test number pending run completion).
+  +0.0045. But with the pretrained encoder, 3k -> 12k gained **+0.045** — the
+  difference is the train/val gap. A model that overfits benefits from more
+  data; one that cannot fit the data at all does not.
+- **More epochs never help** past the plateau (~epoch 30-40 in every run).
+- **Resolution + depth + neighbour negatives** together: +0.009.
+- **Pretrained encoder**: +0.0585, the largest single change measured.
 - Trivial baselines on test (128px era): random 0.041, all-foreground 0.048,
-  disk-at-click 0.116. IoU is not accuracy; random is near 0, not 0.5.
-- Single-click IoU is the only thing ever measured. Multi-click behaviour
-  and NoC have never been evaluated (the app supports multiple clicks; the
-  evaluation does not exist yet).
+  disk-at-click 0.116. IoU is not accuracy; random scores near 0, not 0.5.
+- Single-click IoU is the only thing measured. Multi-click and NoC are not
+  implemented.
 
-From the literature scan (RITM, SimpleClick, FocalClick, Xu et al. 2016 —
-read 2026-08-16, summaries in PROGRESS.md):
+## Design decisions and why
 
-- Disk click encoding beats distance maps (RITM ablation) — our default was
-  already correct; the implemented `encoding: distance` option is
-  literature-deprecated and untested.
-- All 0.8+ methods use pretrained backbones; SimpleClick credits pretraining
-  as the main factor.
-- FocalClick shows target-centered *crops* matter more than raw resolution.
-- RITM-style previous-mask input + iterative click training is what makes
-  additional clicks converge. Neither is implemented here.
-- These methods train on COCO+LVIS (~1.5M instances); ADE20K is smaller and
-  stuff-heavy — part of any gap to their numbers is the dataset.
+**Rejected: fixed per-class or per-slot output tensor** (Kassem's suggestion,
+2026-08-19). Measurement decided it: one channel per class would make 63.8% of
+objects individually unselectable, and top-150 classes only cover 91% of
+objects. One channel per object slot would need 275 channels for the largest
+image and reintroduces the ordering problem (nothing says which chair goes in
+which slot). The click already identifies the object with no channel limit.
 
-## MetaCentrum operations (hard-won; do not relearn these)
+**Adopted instead: SAM-style 3 candidate masks** with a score head. Handles the
+genuine ambiguity (nested objects containing one click) without losing instance
+separation.
 
-- Access: OnDemand (ondemand.metacentrum.cz) → Clusters → Skirit/Perian
-  Shell Access for a frontend terminal (has qsub, internet). Jupyter
-  sessions run inside an NGC container that has torch+CUDA but NO qsub.
-  SSH by password from a terminal has failed repeatedly; use OnDemand.
-- Everything long-running is a **batch job** (`qsub scripts/metacentrum/*.pbs`).
-  Interactive jobs die when the browser tab drops. PBS writes its .o file
-  only at job end; our jobs tee live logs to `outputs/train.log` / `app.log`.
-- **$HOME is not stable across nodes** (multiple storage homes; a job can
-  land with $HOME on praha5-elixir or praha2-natur while the data is on
-  brno2). Three jobs failed this way. Batch scripts hardcode
-  `/storage/brno2/home/$USER` and pass `--data-root` explicitly; Singularity
-  refuses `--env HOME=...`.
-- Container: `/cvmfs/singularity.metacentrum.cz/NGC/PyTorch:25.02-py3.SIF`
-  (torch 2.7 + CUDA + torchvision + numpy/scipy/PIL/yaml/matplotlib; no
-  gradio, no datasets/pyarrow). Needs GPUs with compute capability >= 7.5:
-  on older cards (konos 1080Ti) `torch.cuda.is_available()` is True but the
-  first kernel launch fails. Jobs request `gpu_cap=compute_75`; train.pbs
-  additionally `gpu_mem=30gb` (384x512 depth-4/ResNet batch 32 exceeds 16GB
-  cards).
-- Some compute nodes have **no internet** (pip and wget fail). ImageNet
-  weights are cached once from a frontend to
+**Click encoding stays disks**, not distance maps: RITM's ablation found disks
+better. The `distance` option exists in the code but is non-default and
+untested.
+
+## Literature (RITM, SimpleClick, FocalClick, Xu et al. 2016)
+
+Read 2026-08-16. What methods reaching 0.8+ do that we do not:
+
+- ImageNet-pretrained encoders — adopted, biggest single gain
+- Xu-style negative clicks on neighbouring instances — adopted
+  (`clicks.neighbor_negative_prob`)
+- Target-centered crops (FocalClick): crop around the click instead of resizing
+  the whole scene; a 128px network is competitive that way. Not implemented,
+  and the strongest remaining candidate.
+- Previous mask as an extra input channel + iterative click training (RITM):
+  what makes clicks 2+ converge, and what NoC measures. Not implemented.
+- Caveat: they train on COCO+LVIS (~1.5M instances). ADE20K is smaller and
+  stuff-heavy, so part of any gap is the dataset.
+
+## MetaCentrum specifics (hard-won)
+
+- **`$HOME` differs per node.** You have a home on every storage; a job can land
+  with `$HOME` on praha5-elixir or praha2-natur while the data is on brno2.
+  Three jobs failed this way. Batch scripts hardcode `/storage/brno2/home/$USER`
+  and pass `--data-root`. Overriding HOME for a Singularity container does not
+  work — it refuses.
+- **Container:** `/cvmfs/singularity.metacentrum.cz/NGC/PyTorch:25.02-py3.SIF`
+  has torch 2.7 + CUDA + torchvision + numpy/scipy/PIL/yaml/matplotlib. No
+  gradio, no datasets/pyarrow.
+- **GPU capability:** older cards (konos, 1080 Ti) pass
+  `torch.cuda.is_available()` then fail at the first kernel launch. Jobs request
+  `gpu_cap=compute_75`; train.pbs also `gpu_mem=30gb` for the larger
+  activations. This narrows the pool, so queue waits can be hours.
+- **Some compute nodes have no internet** (pip and wget fail). ImageNet weights
+  are cached once from a frontend to
   `/storage/brno2/home/mais999/.cache/torch/hub/checkpoints/resnet34-b627a593.pth`;
-  train.pbs sets TORCH_HOME there and verifies. The Gradio share app runs as
-  a CPU-only batch job (app.pbs) but still needs a node with internet for
-  pip+tunnel; if it fails, run the app locally instead.
-- Walltime 12h; `train_full.py --auto-resume` continues a killed run from
-  `outputs/checkpoints/latest.pt` (atomic saves; optimizer, scheduler, best,
-  history all restored). Resubmitting the same train.pbs is the whole
-  procedure. Before a NEW experiment: archive
-  `outputs/history.json` + `outputs/checkpoints/best.pt` into `results/<name>/`,
-  then `rm -rf outputs/checkpoints outputs/history.json` so auto-resume
-  cannot continue the wrong model.
-- Git hygiene on the cluster: running the notebook or sed-editing configs
-  dirties the checkout and blocks `git pull` (has bitten twice:
-  `git checkout -- <file>` then pull). The cluster clone is read-only in
-  spirit: all commits happen on the laptop and flow through GitHub.
-- The epoch-time bottleneck is the dataloader (shared-storage PNG decode),
-  not the GPU. Fixed by `load_instance` (decode 1 mask not ~20; 10x),
-  16 workers, persistent_workers, pin_memory, prefetch. Current run:
-  ~230s/epoch at 384x512 batch 32 on an A40.
+  train.pbs sets TORCH_HOME there and verifies. The Gradio app needs a node
+  with internet; if it fails, run the app on the laptop instead.
+- **PBS writes its .o file only at job end**, so jobs tee live logs to
+  `outputs/train.log` / `outputs/app.log`.
+- **Walltime is 12h.** ~230s/epoch at 384x512 batch 32 on 3k images; ~1350s on
+  12k images.
+- **Dataloader is the bottleneck**, not the GPU (measured ~124ms/batch against
+  ~15ms GPU work). Fixed by `load_instance` (decode 1 mask, not ~20), 16
+  workers, persistent_workers, pin_memory, prefetch.
 
-## Local (laptop) setup
+## Verification habits
 
-macOS, venv at `~/projects/click-segmenter/.venv` with requirements.txt
-installed. The app runs locally on CPU:
-`python scripts/app.py --checkpoint ~/Downloads/best.pt --device cpu`
-(checkpoint downloaded via OnDemand Files from
-`.../click-segmenter/outputs/checkpoints/`). `--share` gives a public link.
-The predictor auto-detects checkpoint architecture, so old and new
-checkpoints both load.
+After any pipeline or model change, run the overfit check
+(`python scripts/train.py --device cpu --subset-size 4`) — it must reach IoU
+~1.0. Compile-check and logic-test before pushing; the cluster round-trip is
+expensive. Every reported claim traces to a measured number, and falsified
+hypotheses stay recorded in PROGRESS.md rather than being deleted.
 
-## Run 5 outcome (completed 2026-08-16)
+## Outstanding
 
-ResNet34-UNet, 3k images, lr 3e-4 with plateau decay, batch 32, ~230s/epoch
-on an A40. Early-stopped at epoch 67; best val 0.5699 at epoch 37; **test
-IoU 0.5710** on 5,709 instances. Test above validation — split integrity
-holds. Pretraining is the largest single factor measured in the project
-(+0.0585 over run 3's 0.5125); all from-scratch changes combined were
-+0.0135. Train IoU reached 0.78 at stop, so a sizeable train/val gap
-remains — the motivation for the not-yet-run 12k retest. Checkpoint archived
-under `results/`; README results table and the notebook still show the
-128px-era numbers and need updating against this checkpoint.
-
-## Outstanding work, in Kassem's priority order as understood
-
-1. **Website pages + deploy docs** (his oldest unmet ask): Home / Segment /
-   Help tabs in the Gradio app; deployment instructions a stranger can
-   follow (local install is proven; Hugging Face Spaces was identified as a
-   candidate for a permanent hosted URL but nothing is built).
-2. **Model quality**: he considers ~0.5 not good. Multi-click evaluation
-   (IoU at k clicks, NoC@85/90 — the field's standard metrics, M5 in the
-   original plan) has been proposed to Mais and accepted in principle but
-   NOT built. Literature-supported next levers if quality work continues:
-   target-centered crops, previous-mask + iterative training. Attention at
-   the bottleneck was Kassem's suggestion and remains unimplemented.
-3. **The 12k-image rerun** with the pretrained encoder (single flag) —
-   worth one shot given the current train/val gap.
-4. **Mais's understanding**: he must be able to explain the pipeline
-   (5-channel input, click simulation, BCE+Dice, image-level splits, the
-   overfit test, what each run proved) without assistance. train_simple.py
-   exists for exactly this walkthrough.
-
-## Verification habits this project relies on
-
-Run the overfit test after any pipeline/model change
-(`python scripts/train.py --device cpu --subset-size 4` — must reach IoU
-~1.0). Compile-check and logic-test before pushing; the cluster round-trip
-is expensive. Every claim in reports traces to a measured number; failed
-hypotheses are recorded in PROGRESS.md rather than deleted.
+1. **Website pages + deploy docs** (oldest unmet request): Home / Segment /
+   Help tabs, and installation instructions a stranger can follow. Local
+   install is proven; Hugging Face Spaces identified as a hosting candidate,
+   nothing built.
+2. **GitLab migration**, excluding `.claude/`, `CLAUDE.md`,
+   `segmentation-project-prompt.md`.
+3. **Multi-click / NoC evaluation** — the field's standard metric, never
+   measured, and the honest way to assess an interactive tool.
+4. **Model quality**: target crops and previous-mask iterative training are the
+   literature-supported next levers. Attention remains unimplemented.
+5. **Update README results table and the notebook** with the latest checkpoint.
