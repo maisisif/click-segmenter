@@ -53,24 +53,35 @@ def _draw_markers(image: np.ndarray, clicks: list[Click], radius: int = 6) -> np
     return out
 
 
+def on_upload(image: np.ndarray | None):
+    """Keep the untouched upload. Every prediction runs on this copy."""
+    return image, [], "Click on an object to segment it."
+
+
 def on_click(
-    image: np.ndarray | None,
+    displayed: np.ndarray | None,
+    original: np.ndarray | None,
     clicks: list,
     mode: str,
     threshold: float,
     event: gr.SelectData,
 ):
     """Handle a click on the image: add it, re-predict, redraw."""
-    if image is None:
-        return None, clicks, "Upload an image first."
+    if original is None:
+        # The image arrived by a route that does not fire `upload`. Nothing has
+        # been predicted yet, so what is displayed is still the untouched photo
+        # and adopting it now is safe.
+        original, clicks = displayed, []
+    if original is None:
+        return None, None, clicks, "Upload an image first."
 
     x, y = event.index  # gradio gives (x, y)
     clicks = clicks + [Click(y=int(y), x=int(x), positive=(mode == "Object (include)"))]
 
     assert PREDICTOR is not None
-    mask, probs = PREDICTOR.predict(image, clicks, threshold=threshold)
+    mask, probs = PREDICTOR.predict(original, clicks, threshold=threshold)
 
-    view = _draw_markers(_overlay(image, mask), clicks)
+    view = _draw_markers(_overlay(original, mask), clicks)
 
     coverage = 100 * mask.mean()
     n_pos = sum(c.positive for c in clicks)
@@ -82,11 +93,11 @@ def on_click(
         if mask.any()
         else "No region passed the threshold. Try lowering it, or click nearer the object's centre."
     )
-    return view, clicks, status
+    return view, original, clicks, status
 
 
-def on_reset(image: np.ndarray | None):
-    return image, [], "Cleared. Click an object to segment it."
+def on_reset(original: np.ndarray | None):
+    return original, [], "Cleared. Click an object to segment it."
 
 
 def build_ui() -> gr.Blocks:
@@ -108,6 +119,9 @@ def build_ui() -> gr.Blocks:
             f"UNet trained from scratch on ADE20K, {trained}. Running on `{PREDICTOR.device}`."
         )
 
+        # The displayed image gets painted with the mask tint and click markers,
+        # so it cannot also be what the model receives -- see on_click.
+        original_state = gr.State(None)
         clicks_state = gr.State([])
 
         with gr.Row():
@@ -127,12 +141,22 @@ def build_ui() -> gr.Blocks:
                 reset = gr.Button("Clear clicks")
                 status = gr.Textbox(label="Status", interactive=False, lines=3)
 
+        # `upload`, not `change`: `change` also fires when a handler writes the
+        # annotated view back into the component, which would overwrite the
+        # pristine copy with an already-tinted image.
+        image_in.upload(
+            on_upload,
+            inputs=[image_in],
+            outputs=[original_state, clicks_state, status],
+        )
         image_in.select(
             on_click,
-            inputs=[image_in, clicks_state, mode, threshold],
-            outputs=[image_in, clicks_state, status],
+            inputs=[image_in, original_state, clicks_state, mode, threshold],
+            outputs=[image_in, original_state, clicks_state, status],
         )
-        reset.click(on_reset, inputs=[image_in], outputs=[image_in, clicks_state, status])
+        reset.click(
+            on_reset, inputs=[original_state], outputs=[image_in, clicks_state, status]
+        )
 
     return demo
 
