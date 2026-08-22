@@ -183,19 +183,65 @@ neighbour negatives at p=0.3, batch 32, lr 0.001, 3000 images (justified by
 the data ablation). Old checkpoints still load via a legacy key remap in
 `src/model/unet.py`; the predictor auto-detects checkpoint depth.
 
+## Deployment work (2026-08-22)
+
+Planning settled that the grade is on the system, not on IoU ("a fully working
+software that serves some purpose", Kassem, 2026-08-12), so the shippable
+product comes before further model work. Real deadline 2026-09-10; 2026-09-15 is
+the Computer Vision exam, not a defense.
+
+Built this session:
+
+- **`scripts/export_model.py`** turns a training checkpoint into a deployment
+  one. Measured on a real ResNet-34 checkpoint: 294.4 MB to 98.2 MB, exactly 3x,
+  which is the optimizer state. It also embeds what `detect_arch()` cannot read
+  off the weight shapes (image size, the clicks block, normalization), so the
+  serving side needs no `configs/` at all.
+- **`detect_arch()` now returns `base_channels`** too, read from
+  `stem.block.0.weight`. It was the last piece of architecture still coming from
+  the config, and without it a from-scratch checkpoint could not be rebuilt
+  without the repo.
+- **The interface has three pages** (Home / Segment / Help) and moved to
+  `src/app/`, so `scripts/app.py` and the Space entry point are both thin
+  shells over the same UI. Added undo and a mask PNG download.
+- **`deploy/huggingface/` + `scripts/deploy_space.py`**, splitting the app (69 KB,
+  redeployed freely) from the weights (~98 MB, in a separate model repo). The
+  requirements pin `+cpu` wheels; the default PyPI Linux torch is the ~2.5 GB
+  CUDA build, which a free CPU Space cannot use and may not even build.
+- **`docs/DEPLOY.md`**: install, run, publish, and two troubleshooting tables.
+- **`tests/test_app_wiring.py`**: builds a throwaway model, so it runs anywhere
+  in seconds with no checkpoint and no network.
+
+**Bug found and fixed: refinement clicks were being thrown away.** The old
+`scripts/app.py` wrote the annotated view (mask tint plus click rings) back into
+the same `gr.Image` that was the model's image input. So from the second click
+onward the model was segmenting a green-tinted photo with rings painted on it,
+not the photograph. No error, no warning -- just quietly worse results the more
+a user tried to correct the mask. The pristine upload now lives in a `gr.State`,
+and `tests/test_app_wiring.py` asserts it survives an annotated view being
+passed back in. This is separate from the *design* gap that click two is a fresh
+prediction rather than a correction; that one needs previous-mask input and
+iterative training, and is Week 2 work.
+
+Verified end to end: a real ResNet-34 export predicts a 1536x2048 photo through
+the Space entry point, from the staged Space layout, with the project not
+importable and no configs present.
+
 ## Next steps
 
-1. **Rerun the notebook on the 10k results** and read the qualitative examples.
-   They discriminate between the remaining hypotheses far faster than another
-   training run would.
-2. **M6, the GUI.** Loads `best.pt`, takes a real click, shows the mask. The
-   supervisor asked for this to be built while training runs, and it does not
-   depend on improving the model.
-3. **Attack the 0.50 ceiling**, cheapest experiment first:
-   `clicks.encoding: distance` (config change only), then 256px input, then
-   attention at the bottleneck.
-4. **M5 metrics**: Dice, and NoC (number of clicks to reach a target IoU),
-   the standard interactive-segmentation metric. Optionally a SAM baseline.
+1. **Deploy.** Export the run-6 checkpoint, push weights and Space, send Kassem
+   the URL (target Fri 2026-08-28). Warn him about the free-tier cold start.
+2. **GitLab migration**, excluding `.claude/`, `CLAUDE.md` and
+   `segmentation-project-prompt.md`.
+3. **Previous-mask input + iterative click training.** This is the product
+   defect, not just a metric: extra clicks barely help because the model never
+   sees what it just predicted.
+4. **M5 metrics**: NoC@85 and NoC@90, the field's standard measure and the
+   honest way to describe an interactive tool. Frame results to Kassem as NoC,
+   not as single-click IoU.
+5. One multi-head attention run, if time allows. Model freeze Sat 2026-09-05.
+
+Cut deliberately: target-centered crops, a bigger backbone, augmentation.
 
 Do not spend more effort on dataset size. That was tested and rejected.
 
