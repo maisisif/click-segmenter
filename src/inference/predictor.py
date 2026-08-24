@@ -9,6 +9,14 @@ The important detail is resolution. The model is trained at a fixed size
 and clicks in that image's coordinates. So the flow is: remember the original
 size, downscale the image, convert the click into model coordinates, predict,
 then upscale the mask back so it can be overlaid on what the user actually sees.
+
+Two kinds of checkpoint load here. A **training** checkpoint holds only weights,
+so the settings that describe how to feed it -- resolution, click encoding --
+come from configs/train.yaml and configs/clicks.yaml alongside it. A
+**deployment** checkpoint written by scripts/export_model.py carries those
+settings inside itself, so it loads with no repo checkout at all; that is what
+the hosted app pulls from the Hugging Face model repo. Everything about the
+architecture is read from the weight shapes in both cases.
 """
 
 from __future__ import annotations
@@ -37,21 +45,33 @@ class ClickPredictor:
         clicks_config_path: str | Path = "configs/clicks.yaml",
         device: str | None = None,
     ) -> None:
-        with open(train_config_path) as f:
-            train_config = yaml.safe_load(f)
-        with open(clicks_config_path) as f:
-            self.click_config = yaml.safe_load(f)["clicks"]
-
-        self.image_size = _normalize_size(train_config["data"]["image_size"])  # (H, W)
         self.device = get_device(device or "auto")
-
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+
+        # An exported checkpoint describes itself; a training checkpoint needs
+        # the configs it was trained with. Reading the checkpoint first means
+        # the config files are opened only when they are actually needed, so a
+        # deployment never has to ship them.
+        inference_config = checkpoint.get("inference_config")
+        if inference_config is None:
+            with open(train_config_path) as f:
+                train_config = yaml.safe_load(f)
+            with open(clicks_config_path) as f:
+                click_config = yaml.safe_load(f)["clicks"]
+            inference_config = {
+                "image_size": train_config["data"]["image_size"],
+                "clicks": click_config,
+            }
+
+        self.click_config = inference_config["clicks"]
+        self.image_size = _normalize_size(inference_config["image_size"])  # (H, W)
+
         state_dict = migrate_legacy_state_dict(checkpoint["model_state_dict"])
 
         # Build whatever architecture the checkpoint was actually trained with,
         # detected from its weights rather than trusted from the current config
         # -- so the app loads any era of checkpoint without config surgery.
-        arch_config = {**train_config["model"], **detect_arch(state_dict)}
+        arch_config = detect_arch(state_dict)
         self.model = build_model(arch_config).to(self.device)
         self.model.load_state_dict(state_dict)
         self.model.eval()
@@ -60,9 +80,11 @@ class ClickPredictor:
         divisor = 32 if arch_config["arch"] == "resnet34_unet" else 2 ** arch_config["depth"]
         self.image_size = tuple(-(-s // divisor) * divisor for s in self.image_size)
 
+        self.arch = arch_config
         self.num_masks = arch_config["num_masks"]
-        self.trained_epoch = checkpoint.get("epoch")
-        self.trained_val_iou = checkpoint.get("best_val_iou")
+        provenance = checkpoint.get("provenance", checkpoint)
+        self.trained_epoch = provenance.get("epoch")
+        self.trained_val_iou = provenance.get("best_val_iou")
 
     def predict(
         self,

@@ -310,6 +310,16 @@ def main() -> None:
             "best_epoch": best_epoch,
             "history": history,
             "scheduler_state_dict": scheduler.state_dict(),
+            # The settings that produced these weights, so a checkpoint found
+            # months later can be exported and served correctly without anyone
+            # having to remember which configs/ the run used. Resolution in
+            # particular cannot be recovered from the weights: the network is
+            # fully convolutional and will happily run at a size it was never
+            # trained at, quietly and with no error.
+            "train_settings": {
+                "image_size": list(train_config["data"]["image_size"]),
+                "clicks": dict(click_config),
+            },
         }
         if marker:
             save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, val_loss, state)

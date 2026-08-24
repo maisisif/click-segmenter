@@ -10,8 +10,9 @@ and returns three candidate masks with a predicted quality score for each, so
 that an ambiguous click (a person's shirt could mean shirt, torso, or whole
 person) does not have to be averaged into one blurry answer.
 
-Trained from scratch on ADE20K. No pretrained SAM or other off-the-shelf
-interactive segmenter is used, so the architecture stays open to modification.
+Trained by us on ADE20K. The encoder starts from ImageNet weights, but no
+pretrained SAM or other off-the-shelf interactive segmenter is used at any
+point, so the architecture stays open to modification.
 
 ## Quick start
 
@@ -34,16 +35,26 @@ python scripts/app.py --checkpoint path/to/best.pt --device cpu
 
 Open <http://127.0.0.1:7860>. Add `--share` for a temporary public link.
 
+The interface has three pages: **Home** explains what the model does, **Segment**
+is the tool itself, **Help** covers how to get better results and where it
+fails.
+
 The app auto-detects which architecture a checkpoint was trained with, so any
 checkpoint from this repo's history loads without configuration changes.
+
+For step-by-step installation, hosting the app on Hugging Face Spaces, and a
+troubleshooting table, see **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 ### Using it
 
 - Click an object. A mask appears over it.
 - Wrong region included? Switch **Click type** to **Exclude** and click there.
   The mask is recomputed from all clicks together.
-- **Mask threshold** trades coverage against precision.
-- **Clear clicks** starts over on the same image.
+- **Mask threshold** trades coverage against precision, and re-renders without
+  needing another click.
+- **Undo last click** removes the most recent click; **Clear clicks** starts
+  over on the same image.
+- **Download mask (PNG)** saves the mask alone, at the original resolution.
 
 It expects scene photography — streets, rooms, landscapes — which is what
 ADE20K contains. Product shots on white backgrounds and close-up portraits are
@@ -96,17 +107,26 @@ src/
   model/            UNet, ResNet-UNet, construction from config
   training/         losses, metrics, checkpoints, device selection
   inference/        running a checkpoint on a real click
+  app/              the web interface: layout and page text
 scripts/
-  app.py            the interactive interface
+  app.py            launch the interface locally
+  export_model.py   training checkpoint -> self-contained deployment checkpoint
+  deploy_space.py   push the app to a Space and the weights to a model repo
   train_simple.py   the whole pipeline in one readable file
   train.py          overfit sanity check
   train_full.py     real training with validation and test evaluation
   export_ade20k.py  build the dataset from the Hugging Face mirror
   analyze_dataset.py  measure object and class statistics
   metacentrum/      PBS job scripts for the cluster
+deploy/huggingface/ what gets uploaded to the hosted demo
+docs/DEPLOY.md      installing, running and publishing it
+tests/              regression tests that need no checkpoint and no network
 notebooks/
   results.ipynb     training curves, baselines, example predictions
 ```
+
+Run the tests with `python tests/test_app_wiring.py`. They build a throwaway
+model, so they work on any machine in a couple of seconds.
 
 ## Understanding the code
 

@@ -34,10 +34,12 @@ def build_model(model_config: dict) -> torch.nn.Module:
 
 
 def detect_arch(state_dict: dict) -> dict:
-    """Infer architecture, depth and mask count from a checkpoint's weights.
+    """Infer the full architecture from a checkpoint's weight shapes.
 
     Lets the app and notebook load any checkpoint without the config having to
-    match the era it was saved in.
+    match the era it was saved in. The returned dict is complete enough to pass
+    straight to `build_model` -- which is what makes an exported deployment
+    checkpoint self-contained, with no configs/ checkout on the serving side.
     """
     state_dict = migrate_legacy_state_dict(state_dict)
 
@@ -49,4 +51,11 @@ def detect_arch(state_dict: dict) -> dict:
         return {"arch": "resnet34_unet", "pretrained": False, "num_masks": num_masks}
 
     depth = 1 + max(int(k.split(".")[1]) for k in state_dict if k.startswith("downs."))
-    return {"arch": "unet", "depth": depth, "num_masks": num_masks}
+    # The stem's first conv is (base_channels, in_channels, 3, 3).
+    base_channels = int(state_dict["stem.block.0.weight"].shape[0])
+    return {
+        "arch": "unet",
+        "depth": depth,
+        "base_channels": base_channels,
+        "num_masks": num_masks,
+    }

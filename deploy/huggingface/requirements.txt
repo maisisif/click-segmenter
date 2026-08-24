@@ -1,0 +1,24 @@
+# Dependencies for the hosted demo on Hugging Face Spaces (free CPU tier).
+#
+# The extra index is the whole point of this file. PyPI's Linux `torch` wheel is
+# the CUDA build: roughly 2.5 GB of GPU runtime that a CPU Space can never use,
+# and which pushes the image past what the free tier will build. Pointing pip at
+# PyTorch's CPU index and pinning the `+cpu` local version gets a ~200 MB wheel
+# and a container that starts in a reasonable time.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
+
+# Pinned exactly: the interface uses event listeners whose behaviour Gradio has
+# changed across majors (theme moved off the Blocks constructor in 6.0), and a
+# demo that silently breaks on an upstream release is worse than a stale pin.
+gradio==6.25.0
+
+# Pulls the trained weights from the model repo at startup -- see app.py.
+huggingface_hub>=0.28
+
+numpy
+pillow
+scipy
+pyyaml

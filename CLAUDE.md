@@ -4,7 +4,7 @@ Read this file plus PROGRESS.md at the start of every session. This file holds
 the stable facts: what the project is, what has been built and measured, how to
 operate the infrastructure, and what remains.
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-22.
 
 ---
 
@@ -93,7 +93,23 @@ git add -A && git commit -m "message" && git push origin main
 source .venv/bin/activate
 python scripts/train.py --device cpu --subset-size 4    # overfit check, must reach IoU ~1.0
 python scripts/app.py --checkpoint ~/Downloads/best.pt --device cpu   # add --share for a public link
+python tests/test_app_wiring.py                         # seconds, no checkpoint, no network
 ```
+
+**Ship a checkpoint.** Export first (strips optimizer state, 3x smaller, and
+embeds the settings so the serving side needs no `configs/`), then push the
+weights and the app separately. Full procedure in `docs/DEPLOY.md`.
+
+```bash
+python scripts/export_model.py --checkpoint results/run-NAME/best.pt \
+  --output outputs/export/click-segmenter.pt
+python scripts/deploy_space.py --model maisisif/click-segmenter \
+  --checkpoint outputs/export/click-segmenter.pt   # ~98 MB, only on a new model
+python scripts/deploy_space.py --space maisisif/click-segmenter   # 69 KB, any UI change
+```
+
+`--dry-run` stages and lists without uploading. Both uploads prompt before
+touching a public repo.
 
 Checkpoints come down via OnDemand -> Files -> /storage/brno2 -> projects ->
 click-segmenter -> outputs/checkpoints (or results/run-*/).
@@ -133,6 +149,23 @@ requests: website with pages (home, how to navigate) and deploy instructions a
 random user can follow; multi-head attention layers; migrate the repo to a
 GitLab he created, with no `.claude` or AI folders in it.
 
+Asked on 2026-08-12 whether the grade is on the model or the system, he answered
+the system. **So a working, documented, deployed tool outranks another point of
+IoU**, and the plan is ordered that way. Report results to him as NoC@85 /
+NoC@90 rather than as single-click IoU -- NoC is what an interactive tool is
+actually judged on, and 0.85 single-click was never the target.
+
+Calendar. Real deadline **2026-09-10**; 2026-09-15 is the Computer Vision exam,
+not a project defense, and 09-11 to 09-15 is exam study.
+
+- Week 1 (08-22 to 08-28): GitLab migration, export + inference wrapper, the
+  three pages, deploy to Spaces. Send Kassem the URL by Fri 08-28.
+- Week 2 (08-29 to 09-04): NoC evaluation, previous-mask + iterative training,
+  Help page and README polish, one multi-head attention run.
+- Week 3 (09-05 to 09-10): **model freeze Sat 09-05**, final checkpoint swapped
+  in Sunday, deploy instructions tested on a clean machine. Done 09-10.
+- Cut deliberately: target-centered crops, a bigger backbone, augmentation.
+
 ## How the model works (for explaining it)
 
 The input is **5 channels**: RGB plus two click maps (a disk of radius 5 marks
@@ -169,11 +202,21 @@ src/model/          unet.py (from-scratch, configurable depth, ScoreHead,
 src/training/       losses.py (BCEDiceLoss, MultiMaskLoss), metrics.py
                     (iou_score, best_of_n_iou, select_masks), checkpoints.py
                     (atomic save, full-state resume), device.py
-src/inference/      predictor.py (full-res image + clicks -> mask)
-scripts/            app.py (Gradio), train.py (M3 overfit check),
-                    train_full.py (real training), train_simple.py (readable
-                    walkthrough version), export_ade20k.py, analyze_dataset.py,
-                    metacentrum/*.pbs
+src/inference/      predictor.py (full-res image + clicks -> mask; reads its
+                      settings from an exported checkpoint, falls back to
+                      configs/ for a training one)
+src/app/            ui.py (Blocks layout and event wiring), pages.py (Home and
+                      Help copy). Both entry points are thin shells over this.
+scripts/            app.py (launch locally), export_model.py (deployment
+                    checkpoint), deploy_space.py (push app + weights),
+                    train.py (M3 overfit check), train_full.py (real training),
+                    train_simple.py (readable walkthrough version),
+                    export_ade20k.py, analyze_dataset.py, metacentrum/*.pbs
+deploy/huggingface/ what gets uploaded to the Space: app.py, requirements.txt
+                    (pins +cpu wheels), README.md (Space frontmatter)
+docs/DEPLOY.md      install / run / publish, with troubleshooting tables
+tests/              test_app_wiring.py -- builds a throwaway model, so it needs
+                    no checkpoint and no network
 notebooks/          results.ipynb (curves, baselines, examples)
 results/            archived history.json + best.pt per finished run
 ```
@@ -291,16 +334,28 @@ Read 2026-08-16. What methods reaching 0.8+ do that we do not:
 
 After any pipeline or model change, run the overfit check
 (`python scripts/train.py --device cpu --subset-size 4`) — it must reach IoU
-~1.0. Compile-check and logic-test before pushing; the cluster round-trip is
+~1.0. It writes to `outputs/checkpoints/`, so delete that afterwards or the next
+`--auto-resume` picks up a 2-example toy model.
+
+After any interface change, run `python tests/test_app_wiring.py`. It exists
+because of a bug that was invisible for weeks: the app painted the mask and
+click markers onto the same `gr.Image` it fed the model, so every click after
+the first segmented an annotated image instead of the photo. Nothing errored;
+refinement just quietly did not work. Gradio's `inputs=[...]` lists are
+positional and unchecked, so this class of mistake shows up in the browser, not
+at import — the test calls the handlers through the listeners Blocks actually
+registered. Compile-check and logic-test before pushing; the cluster round-trip is
 expensive. Every reported claim traces to a measured number, and falsified
 hypotheses stay recorded in PROGRESS.md rather than being deleted.
 
 ## Outstanding
 
-1. **Website pages + deploy docs** (oldest unmet request): Home / Segment /
-   Help tabs, and installation instructions a stranger can follow. Local
-   install is proven; Hugging Face Spaces identified as a hosting candidate,
-   nothing built.
+1. **Deploy the Space** (2026-08-22: pages and docs are built, nothing is
+   published yet). Home / Segment / Help tabs exist, `docs/DEPLOY.md` is
+   written, `scripts/deploy_space.py` is dry-run tested. What remains is
+   exporting the run-6 checkpoint, running the two upload commands, and sending
+   Kassem the URL -- with a warning that a free Space sleeps and the first
+   visit takes a minute.
 2. **GitLab migration**, excluding `.claude/`, `CLAUDE.md`,
    `segmentation-project-prompt.md`.
 3. **Multi-click / NoC evaluation** — the field's standard metric, never

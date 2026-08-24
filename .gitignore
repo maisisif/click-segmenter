@@ -5,3 +5,8 @@ venv/
 outputs/
 *.egg-info/
 .DS_Store
+# Archived runs: keep history.json and the results tables tracked, drop the
+# weights. Checkpoints are hundreds of MB and must never enter git history --
+# the deployed model lives in a separate Hugging Face model repo instead.
+results/**/*.pt
+results/**/*.pth
