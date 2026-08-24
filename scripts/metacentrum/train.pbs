@@ -96,6 +96,11 @@ singularity exec --nv \
     "$IMAGE" bash -c "
 set -euo pipefail
 cd '$REPO'
+# Echoed here, inside the teed block, so it reaches outputs/train.log and can be
+# checked while the job runs. The same echo before the container goes only to
+# the PBS .o file, which PBS does not write until the job ends -- too late to
+# catch a run that started with the wrong experiment settings.
+echo 'extra args: ${EXTRA_ARGS:-(none)}'
 python3 -c 'import torch; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())'
 python3 -u scripts/train_full.py --data-root '$DATA_ROOT' --auto-resume ${RESUME:+--resume '$RESUME'} $EXTRA_ARGS
 " 2>&1 | tee "$LIVE_LOG"
