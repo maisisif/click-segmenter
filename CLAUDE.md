@@ -251,8 +251,8 @@ Training uses the visible mask (`arr == 255`).
 | 2 | same, 10k images | 0.5035 |
 | 3 | from scratch, 384x512, depth 4, neighbour negatives, 3k | 0.5125 |
 | 4 | ResNet-34 pretrained encoder, 384x512, 3k | **0.5710** |
-| 5 | same, 12k images (walltime-killed before test eval) | val 0.6175 |
-| 6 | + 3 candidate masks with score head | in progress |
+| 5 | same, 12k images (walltime-killed AT its best epoch) | val 0.6175 |
+| 6 | + 3 candidate masks with score head, 3k images | **0.5796** |
 
 Established by direct experiment:
 
@@ -264,12 +264,33 @@ Established by direct experiment:
   difference is the train/val gap. A model that overfits benefits from more
   data; one that cannot fit the data at all does not.
 - **More epochs never help** past the plateau (~epoch 30-40 in every run).
+  Run 6 confirms it from the other side: early stopping fired at epoch 62 with
+  the best at 42, and over those 20 epochs train IoU climbed 0.68 -> 0.74 while
+  val IoU fell 0.57 -> 0.55. Patience 20 is doing its job; leave it alone.
+- **Multi-mask is worth +0.0086** (run 4 -> run 6, same 3k data, test 0.5710 ->
+  0.5796). Small, but the interesting number is elsewhere: see below.
+- **The score head leaves 0.093 of IoU on the table.** Run 6's test IoU is
+  0.5796 selected but **0.6722 best-of-N**. The three candidates genuinely
+  specialise -- the right answer is in there -- and the selector picks the wrong
+  one often enough to cost more than every change except pretraining. Best-of-N
+  is an oracle bound, so no selector reaches it, but a *human* choosing between
+  three shown candidates captures some of it with no retraining at all. That is
+  the cheapest remaining lever and it is a UI change, not a model change.
+- **Run 5's 0.6175 is a lower bound, not a plateau.** The job was killed at
+  walltime on epoch 30 and epoch 30 was its best, so it was still improving.
+  Any 12k run needs chaining via --auto-resume to actually converge; one 12h
+  job is roughly 28 epochs at 12k, and best epochs land around 42.
 - **Resolution + depth + neighbour negatives** together: +0.009.
 - **Pretrained encoder**: +0.0585, the largest single change measured.
 - Trivial baselines on test (128px era): random 0.041, all-foreground 0.048,
   disk-at-click 0.116. IoU is not accuracy; random scores near 0, not 0.5.
 - Single-click IoU is the only thing measured. Multi-click and NoC are not
   implemented.
+- **Do not compare a 3k run to a 12k run.** Run 6 (3k, 0.5726 val) looks like a
+  regression against run 5 (12k, 0.6175 val) and is not one: the difference is
+  0.0449, against the +0.045 that 3k -> 12k was independently measured to give.
+  The test-split size in the log identifies the run -- 300 images means 3k,
+  1200 means 12k.
 
 ## Design decisions and why
 
