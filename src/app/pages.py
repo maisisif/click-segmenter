@@ -11,7 +11,7 @@ here too; a demo that overstates itself is worse than one that admits a limit.
 
 from __future__ import annotations
 
-HOME = """
+_HOME_TEMPLATE = """
 # Click to segment
 
 **Click an object in a photo. Get a mask of that object.**
@@ -41,10 +41,7 @@ are therefore *different inputs*, each with one right answer. That is what makes
 a single image worth around twenty training examples, and it is why the click can
 select any object without the model needing a fixed list of object types.
 
-The output is **three candidate masks** plus a confidence score for each. A click
-in the middle of a person is genuinely ambiguous -- shirt, torso, or whole person
-are all defensible -- so instead of averaging those into one blurry answer, the
-three candidates specialise and the score picks between them.
+{output_paragraph}
 
 ### What it does well, and where it struggles
 
@@ -52,13 +49,44 @@ It is most reliable on medium-sized, clearly bounded objects with visible edges.
 It is weakest on very small objects, on "stuff" regions with no real boundary
 (sky, road, wall), and on an object that is mostly hidden behind another.
 
-Held-out accuracy is around **0.57 IoU from a single click**. IoU is overlap
-between the predicted mask and the true one, and it is a harsh scale: clicking
-and returning a plain disk scores 0.12, and a random mask scores 0.04. So 0.57 is
-a real result, not a coin flip -- but it is also not a solved problem, and you
-will see it fail. The Help tab is honest about which failures are the model and
-which are known gaps.
+Accuracy from a single click is **around 0.6 IoU** — 0.62 on the validation set
+for the checkpoint served here, and 0.57 on a held-out test set for the closest
+checkpoint that was measured on one. IoU is overlap between the predicted mask
+and the true one, and it is a harsh scale: returning a plain disk at the click
+scores 0.12, and a random mask scores 0.04. So 0.6 is a real result, not a coin
+flip — but it is not a solved problem either, and you will see it fail. The Help
+tab is honest about which failures are the model and which are known gaps.
 """.strip()
+
+
+_MULTI_MASK = """
+The output is **three candidate masks** plus a confidence score for each. A click
+in the middle of a person is genuinely ambiguous — shirt, torso, or whole person
+are all defensible — so instead of averaging those into one blurry answer, the
+three candidates specialise and the score picks between them.
+""".strip()
+
+_SINGLE_MASK = """
+The output is **one mask**. A click in the middle of a person is genuinely
+ambiguous — shirt, torso, or whole person are all defensible — and a model with
+a single output has to commit to one reading, which is a real source of the
+errors you will see. A version returning three scored candidates is built and
+training; it is not the checkpoint served here.
+""".strip()
+
+
+def home(num_masks: int) -> str:
+    """The Home page, describing the checkpoint that is actually loaded.
+
+    How many masks the model outputs is a property of the served weights, not of
+    the repository, so it is read from the model instead of written down. This
+    is not hypothetical: the first checkpoint prepared for deployment returned
+    one mask while this page promised three, which would have been the first
+    thing a visitor read.
+    """
+    return _HOME_TEMPLATE.format(
+        output_paragraph=_MULTI_MASK if num_masks > 1 else _SINGLE_MASK
+    )
 
 
 HELP = """

@@ -22,7 +22,7 @@ import gradio as gr
 import numpy as np
 from PIL import Image
 
-from src.app.pages import HELP, HOME
+from src.app.pages import HELP, home
 from src.data.clicks import Click
 from src.inference.predictor import ClickPredictor
 
@@ -159,7 +159,7 @@ def build_ui(predictor: ClickPredictor, title: str = "Click to segment") -> gr.B
 
         with gr.Tabs():
             with gr.Tab("Home"):
-                gr.Markdown(HOME)
+                gr.Markdown(home(predictor.num_masks))
 
             with gr.Tab("Segment"):
                 with gr.Row():
