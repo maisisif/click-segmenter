@@ -253,6 +253,7 @@ Training uses the visible mask (`arr == 255`).
 | 4 | ResNet-34 pretrained encoder, 384x512, 3k | **0.5710** |
 | 5 | same, 12k images (walltime-killed AT its best epoch) | val 0.6175 |
 | 6 | + 3 candidate masks with score head, 3k images | **0.5796** |
+| 7 | run 6 architecture at 12k images (converged) | **0.6194** |
 
 Established by direct experiment:
 
@@ -276,6 +277,20 @@ Established by direct experiment:
   is an oracle bound, so no selector reaches it, but a *human* choosing between
   three shown candidates captures some of it with no retraining at all. That is
   the cheapest remaining lever and it is a UI change, not a model change.
+- **Run 7 is the best model and the one to deploy.** Test 0.6194, val 0.6191,
+  measured on 24,271 held-out instances (4x run 6's test set, so a steadier
+  number). It converged on its own: early stopping at epoch 76, best at 56, and
+  over those 20 epochs train IoU ran 0.72 -> 0.77 while val fell 0.619 -> 0.602.
+  Patience 20 caught it correctly for the second run in a row.
+- **3k -> 12k is worth +0.0398 with multi-mask** (run 6 0.5796 -> run 7 0.6194),
+  against +0.045 measured for the single-mask pair. Data remains the second
+  largest lever after pretraining, and the two measurements agree closely enough
+  that the effect is now well characterised.
+- **The selection gap survives at scale.** Run 7's test best-of-N is 0.7068
+  against 0.6194 selected -- a gap of 0.0874, against 0.0926 at 3k. Four times
+  the data barely moved it, which says the score head is not data-starved; it is
+  the wrong mechanism. Still the cheapest remaining lever, and still a UI change
+  before it is a model change.
 - **Run 5's 0.6175 is a lower bound, not a plateau.** The job was killed at
   walltime on epoch 30 and epoch 30 was its best, so it was still improving.
   Any 12k run needs chaining via --auto-resume to actually converge; one 12h
