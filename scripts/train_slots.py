@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data.ade20k import discover_samples
 from src.data.clicks import sample_positive_click
-from src.data.dataset import SlotSegmentationDataset, slot_collate
+from src.data.dataset import SlotSegmentationDataset, _normalize_size, slot_collate
 from src.data.splits import split_image_paths
 from src.inference.slot_predictor import SlotPrediction
 from src.model.build import build_model
@@ -58,27 +58,48 @@ def build_loader(
     *,
     shuffle: bool,
     split_name: str,
+    mask_size: tuple[int, int] | None,
+    num_workers: int,
 ) -> DataLoader:
+    """Loader for one split. `mask_size` governs the memory budget -- see below.
+
+    This dataset moves far more data per item than the click one: up to
+    `num_slots` masks per image rather than one. An early run was OOM-killed in
+    a worker after 15 minutes because full-resolution float32 masks came to
+    ~1.6 GB per batch, times the batches every worker keeps prefetched. Masks
+    are now bool, training uses the loss's own resolution, and the queue depth
+    is shallower.
+    """
     dataset = SlotSegmentationDataset(
         image_paths,
         image_size=train_config["data"]["image_size"],
         max_objects=num_slots,
+        mask_size=mask_size,
         # Shared with the click dataset, keyed by the same paths and size, so
         # an existing index is reused rather than rebuilt.
         index_cache=Path("outputs") / f"instance_index_{split_name}.json",
     )
-    num_workers = train_config["training"]["num_workers"]
+    batch_size = train_config["training"]["batch_size"]
+
+    height, width = dataset.mask_size
+    peak_gb = batch_size * num_slots * height * width * (num_workers * 2 + 2) / 1e9
+    print(
+        f"  {split_name}: masks at {height}x{width}, {num_workers} workers, "
+        f"worst-case mask memory in flight ~{peak_gb:.1f} GB"
+    )
+
     return DataLoader(
         dataset,
-        batch_size=train_config["training"]["batch_size"],
+        batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         # Object count varies per image, so masks stay a list rather than being
         # padded to a fixed K and masked out again during matching.
         collate_fn=slot_collate,
-        pin_memory=True,
+        # Pinning a batch this large costs more than the transfer it saves.
+        pin_memory=False,
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else None,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
 
@@ -195,6 +216,13 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--max-images", type=int, default=None, help="0 = all")
     parser.add_argument("--num-slots", type=int, default=64)
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=8,
+        help="Dataloader workers. Lower than the click model's 16: each item "
+        "carries up to num_slots masks, so workers dominate memory here.",
+    )
     parser.add_argument("--mask-stride", type=int, default=2, choices=[2, 4])
     parser.add_argument("--resume", default=None)
     parser.add_argument(
@@ -247,11 +275,21 @@ def main() -> None:
     for name, paths in splits.items():
         print(f"  {name}: {len(paths)} images")
 
+    # Training targets are only ever compared at the logits' resolution, so
+    # carrying them at full size wastes memory the dataloader does not have.
+    # Validation keeps full resolution: its IoU is the number reported against
+    # the click model's 0.6194, and measuring it on a coarser grid would
+    # flatter it.
+    image_size = _normalize_size(train_config["data"]["image_size"])
+    train_mask_size = (image_size[0] // args.mask_stride, image_size[1] // args.mask_stride)
+
     train_loader = build_loader(
-        splits["train"], train_config, args.num_slots, shuffle=True, split_name="train"
+        splits["train"], train_config, args.num_slots, shuffle=True, split_name="train",
+        mask_size=train_mask_size, num_workers=args.num_workers,
     )
     val_loader = build_loader(
-        splits["val"], train_config, args.num_slots, shuffle=False, split_name="val"
+        splits["val"], train_config, args.num_slots, shuffle=False, split_name="val",
+        mask_size=None, num_workers=max(args.num_workers // 2, 1),
     )
     print(
         f"Images -> train: {len(train_loader.dataset)}  "
@@ -373,7 +411,8 @@ def main() -> None:
         best = torch.load(checkpoint_dir / "best.pt", map_location=device, weights_only=False)
         model.load_state_dict(best["model_state_dict"])
         test_loader = build_loader(
-            splits["test"], train_config, args.num_slots, shuffle=False, split_name="test"
+            splits["test"], train_config, args.num_slots, shuffle=False, split_name="test",
+            mask_size=None, num_workers=max(args.num_workers // 2, 1),
         )
         test_loss, test_iou, test_oracle, scored = evaluate_by_click(
             model, test_loader, criterion, device

@@ -198,13 +198,16 @@ class HungarianMaskLoss(nn.Module):
             if target.numel() == 0 or target.shape[0] == 0:
                 continue
 
+            # Cast once, here: the dataset stores masks as bool to keep them
+            # out of the dataloader's memory budget, and interpolate needs float.
+            target = target.float()
             if target.shape[-2:] != (height, width):
                 target = F.interpolate(
                     target.unsqueeze(1), size=(height, width), mode="nearest"
                 ).squeeze(1)
 
             flat_logits = mask_logits[i].flatten(1)  # (N, P)
-            flat_target = target.flatten(1).float()  # (K, P)
+            flat_target = target.flatten(1)          # (K, P)
 
             with torch.no_grad():
                 cost = self._cost_matrix(flat_logits.detach(), flat_target)

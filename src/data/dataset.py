@@ -240,7 +240,7 @@ class SlotSegmentationDataset(Dataset):
 
     Returns (image, masks):
         image  (3, H, W) float in [0, 1]
-        masks  (K, H, W) float, K variable and possibly 0
+        masks  (K, h, w) bool at `mask_size`, K variable and possibly 0
 
     K varies per image, so batches need `slot_collate` rather than the default.
     """
@@ -250,9 +250,18 @@ class SlotSegmentationDataset(Dataset):
         image_paths: list[Path],
         image_size: int | tuple[int, int] = 128,
         max_objects: int = 64,
+        mask_size: int | tuple[int, int] | None = None,
         index_cache: Path | None = None,
     ) -> None:
         self.image_size = _normalize_size(image_size)
+        # Masks default to the image size but should be set to the resolution
+        # the loss actually uses. Full-resolution targets are pure waste in
+        # training -- the loss downsamples them to the logits' grid anyway --
+        # and they are expensive waste: 64 masks at 384x512 is 50 MB per image
+        # as float32, so a batch of 32 with workers prefetching ahead of it ran
+        # a 48 GB job out of memory in 15 minutes. Validation still wants full
+        # resolution, so it is a parameter rather than a constant.
+        self.mask_size = _normalize_size(mask_size) if mask_size is not None else self.image_size
         self.max_objects = max_objects
 
         items = _build_valid_index(image_paths, self.image_size, index_cache)
@@ -275,7 +284,7 @@ class SlotSegmentationDataset(Dataset):
 
         masks = []
         for instance_id in self.ids_by_path[path]:
-            mask = _resize_mask(load_instance_mask(path, instance_id), self.image_size)
+            mask = _resize_mask(load_instance_mask(path, instance_id), self.mask_size)
             if mask.any():  # the index promises this, but a mask file can go missing
                 masks.append(mask)
 
@@ -286,9 +295,11 @@ class SlotSegmentationDataset(Dataset):
             masks.sort(key=lambda m: -int(m.sum()))
             masks = masks[: self.max_objects]
 
+        # bool, not float32: a quarter of the bytes, and the loss casts once on
+        # the GPU where the copy is cheap.
         if not masks:
-            return image_tensor, torch.zeros(0, *self.image_size)
-        return image_tensor, torch.from_numpy(np.stack(masks).astype(np.float32))
+            return image_tensor, torch.zeros(0, *self.mask_size, dtype=torch.bool)
+        return image_tensor, torch.from_numpy(np.stack(masks))
 
 
 def slot_collate(

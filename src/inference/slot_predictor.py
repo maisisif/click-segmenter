@@ -61,6 +61,7 @@ class SlotPrediction:
         self._binary = probs > threshold
         self._areas = self._binary.flatten(1).sum(dim=1)
         self._candidates = (objectness > objectness_threshold).nonzero().flatten().tolist()
+        self._upsampled: dict[int, np.ndarray] = {}
 
     @property
     def num_objects(self) -> int:
@@ -135,12 +136,24 @@ class SlotPrediction:
 
         Probabilities are resized rather than the thresholded mask, so the
         boundary interpolates smoothly instead of showing the mask grid.
+
+        Cached per slot. One encoding answers many questions -- every object in
+        the image during validation, every click in the app -- and the same few
+        slots come back repeatedly, so upsampling them once each rather than
+        once per question is the difference between an interpolation per
+        instance and one per slot.
         """
-        probs = self.probs[slot][None, None]
-        full = F.interpolate(
-            probs, size=self.original_size, mode="bilinear", align_corners=False
-        )
-        return (full[0, 0] > self.threshold).numpy()
+        cached = self._upsampled.get(slot)
+        if cached is None:
+            full = F.interpolate(
+                self.probs[slot][None, None],
+                size=self.original_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+            cached = (full[0, 0] > self.threshold).numpy()
+            self._upsampled[slot] = cached
+        return cached
 
 
 class SlotPredictor:
