@@ -23,6 +23,8 @@ from scipy.optimize import linear_sum_assignment
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.data.clicks import Click
+from src.inference.slot_predictor import SlotPrediction
 from src.model.slot_unet import SlotUNet
 from src.training.losses import HungarianMaskLoss
 
@@ -110,8 +112,63 @@ def test_overfits_distinct_objects() -> None:
     print("three objects memorised into three separate slots, IoU > 0.9  ok")
 
 
+def _nested_scene() -> SlotPrediction:
+    """Five slots with known nesting, so selection can be checked exactly."""
+    size = 64
+    probs = torch.zeros(5, size, size)
+    probs[0, 10:50, 10:50] = 0.9   # person
+    probs[1, 15:35, 15:35] = 0.9   # torso, inside the person
+    probs[2, 18:28, 18:28] = 0.9   # shirt, inside the torso
+    probs[3, 55:60, 55:60] = 0.9   # an unrelated object elsewhere
+    probs[4, 0:64, 0:64] = 0.9     # a slot objectness rejects
+    objectness = torch.tensor([0.9, 0.9, 0.9, 0.9, 0.1])
+    return SlotPrediction(probs, objectness, original_size=(size, size))
+
+
+def test_click_selection() -> None:
+    state = _nested_scene()
+    assert state.num_objects == 4, "objectness should reject the fifth slot"
+
+    inside = Click(y=22, x=22, positive=True)
+
+    # Nested objects all contain the click; smallest is shown, rest are offered.
+    _, ranked = state.select([inside])
+    assert ranked == [2, 1, 0], ranked
+
+    # A negative inside the torso but outside the shirt leaves only the shirt.
+    _, ranked = state.select([inside, Click(y=32, x=32, positive=False)])
+    assert ranked == [2], ranked
+
+    # A negative inside the person but outside the torso leaves both smaller ones.
+    _, ranked = state.select([inside, Click(y=45, x=45, positive=False)])
+    assert ranked == [2, 1], ranked
+
+    # Positive and negative on the same object is contradictory: return nothing
+    # rather than guessing which of the two the user meant.
+    mask, ranked = state.select([inside, Click(y=20, x=20, positive=False)])
+    assert ranked == [] and not mask.any()
+
+    # Only the person contains both clicks.
+    _, ranked = state.select([Click(y=12, x=12, positive=True), inside])
+    assert ranked == [0], ranked
+    print("nested objects, negatives and contradictions select correctly  ok")
+
+
+def test_clicks_are_in_original_image_coordinates() -> None:
+    """The mask grid is not the photo. A click at (88, 88) on a 256x256 image is
+    the same point as (22, 22) on the 64x64 grid, and must select the same slot."""
+    state = _nested_scene()
+    state.original_size = (256, 256)
+    mask, ranked = state.select([Click(y=88, x=88, positive=True)])
+    assert ranked == [2, 1, 0], ranked
+    assert mask.shape == (256, 256), mask.shape
+    print("clicks map from original image pixels onto the mask grid      ok")
+
+
 if __name__ == "__main__":
     test_shapes()
     test_empty_image_is_survivable()
     test_overfits_distinct_objects()
+    test_click_selection()
+    test_clicks_are_in_original_image_coordinates()
     print("\nall slot model tests passed")

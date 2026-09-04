@@ -30,7 +30,21 @@ def build_model(model_config: dict) -> torch.nn.Module:
             num_masks=num_masks,
             pretrained=model_config.get("pretrained", True),
         )
-    raise ValueError(f"unknown model.arch {arch!r}, expected 'unet' or 'resnet34_unet'")
+    if arch == "slot_unet":
+        # Class-agnostic slot segmentation: RGB in, every object out, the click
+        # selects afterwards. Takes num_slots rather than num_masks -- the two
+        # mean different things (objects in the image vs readings of one click),
+        # so they are deliberately not the same key.
+        from src.model.slot_unet import SlotUNet
+
+        return SlotUNet(
+            num_slots=model_config.get("num_slots", 64),
+            pretrained=model_config.get("pretrained", True),
+            mask_stride=model_config.get("mask_stride", 2),
+        )
+    raise ValueError(
+        f"unknown model.arch {arch!r}, expected 'unet', 'resnet34_unet' or 'slot_unet'"
+    )
 
 
 def detect_arch(state_dict: dict) -> dict:
@@ -45,6 +59,16 @@ def detect_arch(state_dict: dict) -> dict:
 
     # head.weight is (num_masks, C, 1, 1) for both architectures.
     num_masks = int(state_dict["head.weight"].shape[0])
+
+    if any(key.startswith("objectness.") for key in state_dict):
+        # Only the slot model has an objectness head. Its decoder runs one stage
+        # further at stride 2, so up4's presence gives the mask resolution back.
+        return {
+            "arch": "slot_unet",
+            "pretrained": False,
+            "num_slots": num_masks,
+            "mask_stride": 2 if any(key.startswith("up4.") for key in state_dict) else 4,
+        }
 
     if any(key.startswith("layer1.") for key in state_dict):
         # weights come from the checkpoint, so don't re-download ImageNet ones

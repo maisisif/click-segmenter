@@ -218,3 +218,87 @@ class ClickSegmentationDataset(Dataset):
         input_tensor = torch.from_numpy(input_array).float()
         target_tensor = torch.from_numpy(mask.astype(np.float32)).unsqueeze(0)
         return input_tensor, target_tensor
+
+
+class SlotSegmentationDataset(Dataset):
+    """One item = one whole image with *all* its instance masks.
+
+    The counterpart to ClickSegmentationDataset, for the slot architecture. The
+    click model needs one object per example because the click selects it before
+    the forward pass; the slot model predicts every object at once, so an example
+    has to carry every object.
+
+    That inverts the loading trade-off. `load_instance` exists because decoding
+    ~20 masks to use 1 made the dataloader the bottleneck -- but here all ~20 are
+    used, and an epoch is one item per image rather than one per instance. On the
+    12k set that is 8,402 items instead of 167,210: each is ~20x more work, but
+    there are ~20x fewer, and far fewer forward passes.
+
+    The instance index is the same cache the click dataset builds, keyed by the
+    same paths and image size, so switching architectures does not force a
+    rebuild.
+
+    Returns (image, masks):
+        image  (3, H, W) float in [0, 1]
+        masks  (K, H, W) float, K variable and possibly 0
+
+    K varies per image, so batches need `slot_collate` rather than the default.
+    """
+
+    def __init__(
+        self,
+        image_paths: list[Path],
+        image_size: int | tuple[int, int] = 128,
+        max_objects: int = 64,
+        index_cache: Path | None = None,
+    ) -> None:
+        self.image_size = _normalize_size(image_size)
+        self.max_objects = max_objects
+
+        items = _build_valid_index(image_paths, self.image_size, index_cache)
+        ids_by_path: dict[Path, list[int]] = {}
+        for path, instance_id in items:
+            ids_by_path.setdefault(path, []).append(instance_id)
+
+        # Sorted so the dataset order is deterministic across runs and machines.
+        self.images = sorted(ids_by_path)
+        self.ids_by_path = ids_by_path
+
+    def __len__(self) -> int:
+        return len(self.images)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        path = self.images[idx]
+
+        image = _resize_image(np.array(Image.open(path).convert("RGB")), self.image_size)
+        image_tensor = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1) / 255.0)
+
+        masks = []
+        for instance_id in self.ids_by_path[path]:
+            mask = _resize_mask(load_instance_mask(path, instance_id), self.image_size)
+            if mask.any():  # the index promises this, but a mask file can go missing
+                masks.append(mask)
+
+        # Roughly 5% of ADE20K images carry more objects than there are slots.
+        # Keep the largest: small objects are both less likely to be clicked and
+        # the ones the model segments worst, so they are the cheapest to drop.
+        if len(masks) > self.max_objects:
+            masks.sort(key=lambda m: -int(m.sum()))
+            masks = masks[: self.max_objects]
+
+        if not masks:
+            return image_tensor, torch.zeros(0, *self.image_size)
+        return image_tensor, torch.from_numpy(np.stack(masks).astype(np.float32))
+
+
+def slot_collate(
+    batch: list[tuple[torch.Tensor, torch.Tensor]]
+) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    """Stack images, leave masks as a list -- object count varies per image.
+
+    This is the shape HungarianMaskLoss expects, and padding to a fixed K would
+    only mean masking the padding out again during matching.
+    """
+    images = torch.stack([image for image, _ in batch])
+    targets = [masks for _, masks in batch]
+    return images, targets
