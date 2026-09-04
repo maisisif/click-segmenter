@@ -48,6 +48,13 @@ RESUME=""
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 echo "extra args: ${EXTRA_ARGS:-(none)}"
 
+# Which entry point to run. train_full.py is the click-conditioned model;
+# train_slots.py is the slot architecture, which needs whole images rather than
+# (image, instance) pairs and so has its own loop:
+#     qsub -v TRAIN_SCRIPT=scripts/train_slots.py,EXTRA_ARGS="--max-images 0" ...
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-scripts/train_full.py}"
+echo "train script: $TRAIN_SCRIPT"
+
 echo "=== Node ==="
 hostname -f
 nvidia-smi
@@ -59,20 +66,26 @@ ls -d "$REPO" || { echo "FATAL: repo not found at $REPO"; exit 1; }
 # internet, so if the cache is cold, fetch here only if we can; otherwise tell
 # the user to run the wget once on a frontend (frontends have internet).
 export TORCH_HOME="$HOME_DIR/.cache/torch"
-WEIGHTS="$TORCH_HOME/hub/checkpoints/resnet34-b627a593.pth"
-if [ ! -f "$WEIGHTS" ]; then
-    echo "ImageNet weights not cached, attempting download..."
-    mkdir -p "$(dirname "$WEIGHTS")"
-    wget -q -O "$WEIGHTS" https://download.pytorch.org/models/resnet34-b627a593.pth || {
-        rm -f "$WEIGHTS"
-        echo "FATAL: no cached weights and this node has no internet."
-        echo "Run this ONCE on a frontend (skirit), then resubmit:"
-        echo "  mkdir -p $TORCH_HOME/hub/checkpoints"
-        echo "  wget -O $WEIGHTS https://download.pytorch.org/models/resnet34-b627a593.pth"
-        exit 1
-    }
-fi
-echo "ImageNet weights: $(ls -la "$WEIGHTS" | awk '{print $5}') bytes"
+# Both backbones: resnet34 for the click-conditioned model, resnet50 for the
+# slot model. Caching whichever is missing costs nothing when it is already
+# there, and means switching architectures does not fail on a node with no
+# internet halfway through the queue wait.
+for MODEL in resnet34-b627a593 resnet50-0676ba61; do
+    WEIGHTS="$TORCH_HOME/hub/checkpoints/${MODEL}.pth"
+    if [ ! -f "$WEIGHTS" ]; then
+        echo "ImageNet weights for ${MODEL} not cached, attempting download..."
+        mkdir -p "$(dirname "$WEIGHTS")"
+        wget -q -O "$WEIGHTS" "https://download.pytorch.org/models/${MODEL}.pth" || {
+            rm -f "$WEIGHTS"
+            echo "FATAL: ${MODEL} weights not cached and this node has no internet."
+            echo "Run this ONCE on a frontend (skirit), then resubmit:"
+            echo "  mkdir -p $TORCH_HOME/hub/checkpoints"
+            echo "  wget -O $WEIGHTS https://download.pytorch.org/models/${MODEL}.pth"
+            exit 1
+        }
+    fi
+    echo "ImageNet weights ${MODEL}: $(ls -la "$WEIGHTS" | awk '{print $5}') bytes"
+done
 
 # PBS only copies its own .o file back when the job ends, which is useless for
 # watching a 12-hour run. Tee everything into the repo as well so progress can
@@ -100,9 +113,10 @@ cd '$REPO'
 # checked while the job runs. The same echo before the container goes only to
 # the PBS .o file, which PBS does not write until the job ends -- too late to
 # catch a run that started with the wrong experiment settings.
+echo 'train script: $TRAIN_SCRIPT'
 echo 'extra args: ${EXTRA_ARGS:-(none)}'
 python3 -c 'import torch; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())'
-python3 -u scripts/train_full.py --data-root '$DATA_ROOT' --auto-resume ${RESUME:+--resume '$RESUME'} $EXTRA_ARGS
+python3 -u '$TRAIN_SCRIPT' --data-root '$DATA_ROOT' --auto-resume ${RESUME:+--resume '$RESUME'} $EXTRA_ARGS
 " 2>&1 | tee "$LIVE_LOG"
 
 echo "=== Results ==="

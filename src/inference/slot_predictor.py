@@ -54,10 +54,18 @@ class SlotPrediction:
         self.threshold = threshold
         self.objectness_threshold = objectness_threshold
 
+        # Thresholded once, not per click. Validation asks about every object in
+        # an image -- ~20 calls against the same encoding -- and the interactive
+        # app asks again on every click, so recomputing this each time is pure
+        # waste. Areas are cached alongside for the smallest-first ordering.
+        self._binary = probs > threshold
+        self._areas = self._binary.flatten(1).sum(dim=1)
+        self._candidates = (objectness > objectness_threshold).nonzero().flatten().tolist()
+
     @property
     def num_objects(self) -> int:
         """How many slots the model believes hold a real object."""
-        return int((self.objectness > self.objectness_threshold).sum())
+        return len(self._candidates)
 
     def _grid_click(self, click: Click) -> tuple[int, int]:
         """Map a click in original image pixels onto the mask grid."""
@@ -80,8 +88,8 @@ class SlotPrediction:
         Negative clicks are pure exclusion here -- no forward pass, no extra
         machinery, just dropping every slot that contains the point.
         """
-        binary = self.probs > self.threshold
-        candidates = (self.objectness > self.objectness_threshold).nonzero().flatten().tolist()
+        binary = self._binary
+        candidates = self._candidates
 
         positives = [c for c in clicks if c.positive]
         negatives = [c for c in clicks if not c.positive]
@@ -109,7 +117,7 @@ class SlotPrediction:
             if column[best] > 0:
                 keep = [best]
 
-        keep.sort(key=lambda s: int(binary[s].sum()))
+        keep.sort(key=lambda s: int(self._areas[s]))
         return keep
 
     def select(self, clicks: list[Click]) -> tuple[np.ndarray, list[int]]:
