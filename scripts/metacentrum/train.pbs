@@ -115,6 +115,10 @@ cd '$REPO'
 # catch a run that started with the wrong experiment settings.
 echo 'train script: $TRAIN_SCRIPT'
 echo 'extra args: ${EXTRA_ARGS:-(none)}'
+# Which card this landed on, in the live log rather than only in the PBS .o
+# file. Throughput varies several-fold across the eligible GPUs, so an epoch
+# time is uninterpretable without knowing which one produced it.
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 python3 -c 'import torch; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())'
 python3 -u '$TRAIN_SCRIPT' --data-root '$DATA_ROOT' --auto-resume ${RESUME:+--resume '$RESUME'} $EXTRA_ARGS
 " 2>&1 | tee "$LIVE_LOG"
