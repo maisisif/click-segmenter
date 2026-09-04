@@ -4,7 +4,7 @@ Read this file plus PROGRESS.md at the start of every session. This file holds
 the stable facts: what the project is, what has been built and measured, how to
 operate the infrastructure, and what remains.
 
-Last updated: 2026-08-22.
+Last updated: 2026-09-03.
 
 ---
 
@@ -386,16 +386,39 @@ hypotheses stay recorded in PROGRESS.md rather than being deleted.
 
 ## Outstanding
 
-1. **Deploy the Space** (2026-08-22: pages and docs are built, nothing is
-   published yet). Home / Segment / Help tabs exist, `docs/DEPLOY.md` is
-   written, `scripts/deploy_space.py` is dry-run tested. What remains is
-   exporting the run-6 checkpoint, running the two upload commands, and sending
-   Kassem the URL -- with a warning that a free Space sleeps and the first
-   visit takes a minute.
+State as of **2026-09-03**, one week before the 09-10 deadline. Training is
+finished; everything left is delivery.
+
+1. **DEPLOY THE SPACE. Nothing is published yet** -- this is the single largest
+   outstanding deliverable and it was due 08-28. All of it is built and
+   rehearsed: Home / Segment / Help tabs, `docs/DEPLOY.md`, and
+   `scripts/deploy_space.py` dry-run tested. The blocker has only ever been
+   `hf auth login`, which needs a human to paste a token. Steps:
+   - download `results/run-multimask-12k/best.pt` (294 MB) off the cluster
+   - `python scripts/export_model.py --checkpoint <path> --output outputs/export/click-segmenter.pt`
+     (no `--image-size` needed; this run recorded its own `train_settings`)
+   - `hf auth login`, then the `--model` and `--space` commands from the
+     Laptop section above
+   - send Kassem the URL, warning that a free Space sleeps and the first visit
+     takes about a minute
+   `outputs/export/click-segmenter.pt` currently holds **run 5**, exported
+   2026-08-24. Run 7 supersedes it and should be exported over it.
 2. **GitLab migration**, excluding `.claude/`, `CLAUDE.md`,
-   `segmentation-project-prompt.md`.
+   `segmentation-project-prompt.md`. Blocked on Kassem sending the repo URL;
+   he has not. `git-filter-repo` is installed and the plan is checked: those
+   paths appear in 11 commits, filtering drops 2 commits that touch nothing
+   else (both "Rewrite CLAUDE.md as full project handoff") and preserves the
+   other 40, including the refinement-click bug fix whose message is the
+   evidence of process worth keeping.
 3. **Multi-click / NoC evaluation** — the field's standard metric, never
-   measured, and the honest way to assess an interactive tool.
-4. **Model quality**: target crops and previous-mask iterative training are the
-   literature-supported next levers. Attention remains unimplemented.
-5. **Update README results table and the notebook** with the latest checkpoint.
+   measured, and the honest way to assess an interactive tool. Report to Kassem
+   as NoC@85 / NoC@90 if it gets done; single-click IoU if it does not.
+4. **Update README results table and the notebook** with run 7 (test 0.6194).
+5. **Cut unless the above is finished**: previous-mask iterative training,
+   target crops, attention. These were Week 2 plans that did not happen. The
+   grade is on the system, so a deployed documented tool at 0.6194 outranks all
+   of them.
+
+The cheapest remaining *quality* win is not a training run: run 7's best-of-N
+is 0.7068 against 0.6194 selected, and showing the user all three candidate
+masks captures part of that with no retraining at all.
