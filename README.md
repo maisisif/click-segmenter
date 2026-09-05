@@ -44,7 +44,9 @@ The app auto-detects which architecture a checkpoint was trained with, so any
 checkpoint from this repo's history loads without configuration changes.
 
 For step-by-step installation, hosting the app on Hugging Face Spaces, and a
-troubleshooting table, see **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+troubleshooting table, see **[docs/DEPLOY.md](docs/DEPLOY.md)**. For the full
+engineering record — every architecture, experiment, measurement and dead end —
+see **[docs/TECHNICAL-RECORD.md](docs/TECHNICAL-RECORD.md)**.
 
 ### Using it
 
