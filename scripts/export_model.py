@@ -119,15 +119,21 @@ def build_payload(
     else:
         normalization = {"applied": "none"}
 
+    # Channel order is fixed by src/data/encoding.py; naming it here means a
+    # client does not have to read that module to get it right. A sixth
+    # channel, when present, is the model's own previous probability map
+    # (zero before the first click) -- see src/training/interaction.py.
+    input_channels = ["red", "green", "blue", "positive_clicks", "negative_clicks"]
+    if arch_config.get("in_channels", 5) == 6:
+        input_channels.append("previous_mask")
+
     return {
         "format_version": FORMAT_VERSION,
         "model_state_dict": state_dict,
         "inference_config": {
             "image_size": list(settings["image_size"]),
             "clicks": dict(settings["clicks"]),
-            # Channel order is fixed by src/data/encoding.py; naming it here
-            # means a client does not have to read that module to get it right.
-            "input_channels": ["red", "green", "blue", "positive_clicks", "negative_clicks"],
+            "input_channels": input_channels,
             "input_range": [0.0, 1.0],
             "normalization": normalization,
         },

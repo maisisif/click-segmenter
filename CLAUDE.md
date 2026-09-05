@@ -76,6 +76,32 @@ cd ~/projects/click-segmenter && python3 scripts/analyze_dataset.py \
   --data-root /storage/brno2/home/$USER/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE
 ```
 
+**Measure multi-click IoU and NoC** (the field's metric; one forward pass per
+click per instance, ~30 min for 5k instances x 20 clicks on a GPU):
+
+```bash
+qsub -v EVAL_ARGS="--checkpoint results/run-7/best.pt --split val --max-instances 5000 --output outputs/eval/run7-val.json" \
+     scripts/metacentrum/evaluate.pbs
+tail -40 ~/projects/click-segmenter/outputs/eval.log
+```
+
+Add `--selection consistent` or `--flip-tta` to measure an inference option;
+`--split test` only once, on the final configuration. Checkpoints from before
+2026-09-05 do not record `max_images`: pass `--max-images 3000` for runs 1-4
+and 6, `--max-images 0` for 5, 7 and later, or the split will overlap training.
+
+**Fine-tune run 7 iteratively** (multi-click training with previous-mask input;
+separate output directory so it cannot clobber another run):
+
+```bash
+qsub -v EXTRA_ARGS="--init-from results/run-7/best.pt --prev-mask --iterative-clicks 3 --lr 0.0001 --max-images 0 --checkpoint-dir outputs/iterative/checkpoints --history-path outputs/iterative/history.json" \
+     scripts/metacentrum/train.pbs
+```
+
+Resubmitting the same line after a walltime kill resumes it (`--auto-resume`
+looks in `--checkpoint-dir`). The log reports `IoU@3` (selection metric) and
+`IoU@1` side by side; expect IoU@1 to stay near 0.62 and IoU@3 to climb.
+
 **Git hygiene on the cluster.** Running the notebook or editing configs dirties
 the checkout and blocks `git pull`. The cluster clone is read-only in spirit;
 all commits happen on the laptop.
@@ -94,6 +120,7 @@ source .venv/bin/activate
 python scripts/train.py --device cpu --subset-size 4    # overfit check, must reach IoU ~1.0
 python scripts/app.py --checkpoint ~/Downloads/best.pt --device cpu   # add --share for a public link
 python tests/test_app_wiring.py                         # seconds, no checkpoint, no network
+python tests/test_interaction.py                        # multi-click protocol, widening, replay
 ```
 
 **Ship a checkpoint.** Export first (strips optimizer state, 3x smaller, and

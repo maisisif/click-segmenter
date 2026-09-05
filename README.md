@@ -211,6 +211,44 @@ Reported metrics are the IoU of the mask the system would actually return
 the best-of-N IoU as an oracle upper bound. The gap between them measures how
 much the selection step is losing.
 
+### Measuring it the way the field does
+
+Single-click IoU is what the table above reports; the standard metric for an
+interactive tool is what happens over a *sequence* of clicks. `scripts/evaluate.py`
+runs the RITM / SimpleClick protocol -- predict, place the next click at the
+centre of the largest error region, repeat -- and reports mean IoU after k
+clicks, the number of clicks needed to reach 80/85/90% IoU (NoC), and both
+broken down by object size:
+
+```bash
+python scripts/evaluate.py --checkpoint path/to/best.pt --data-root path/to/ADE \
+    --split val --max-instances 5000 --max-clicks 20 --output outputs/eval/val.json
+```
+
+`--selection consistent` and `--flip-tta` measure two inference-time options
+that need no retraining. Use `--split test` once, on the final configuration.
+
+### Multi-click training
+
+`train_full.py --iterative-clicks N` trains the way RITM does: before each
+step the model is run up to N times without gradient, a corrective click is
+added where it was wrong, and the corrected prediction is what gets supervised.
+`--prev-mask` adds a sixth input channel holding the model's previous
+prediction, so a later click corrects the mask instead of starting over.
+`--init-from` fine-tunes from an existing checkpoint (five-channel weights are
+widened with zero filters for the new channel):
+
+```bash
+python scripts/train_full.py --init-from results/run-7/best.pt \
+    --prev-mask --iterative-clicks 3 --lr 0.0001 --max-images 0 \
+    --checkpoint-dir outputs/iterative/checkpoints --history-path outputs/iterative/history.json
+```
+
+Validation then selects the best epoch on IoU after N clicks and logs
+single-click IoU alongside it. The app and the predictor load six-channel
+checkpoints unchanged: clicks are replayed in order, each step seeing the
+previous mask, with intermediate maps cached so one more click costs one pass.
+
 ### On a cluster
 
 `scripts/metacentrum/` holds PBS scripts for MetaCentrum: dataset export,
@@ -250,14 +288,14 @@ Key settings in `configs/train.yaml`: `model.arch` (`unet` or
 
 ## Limitations and next steps
 
-- Only single-click IoU is measured. The standard metric for interactive
-  segmentation is NoC (clicks needed to reach a target IoU), which is not
-  implemented.
+- The results table reports single-click IoU. NoC and mIoU@k are implemented
+  (`scripts/evaluate.py`) but not yet measured for the shipped checkpoint.
 - The whole image is resized to 384x512 before the model sees it. Published
   work suggests cropping around the click instead is more effective than raw
   resolution.
-- Each click is treated independently; feeding the previous mask back as an
-  input, with iterative training, is what makes successive corrections converge.
+- The shipped checkpoint treats each click independently. Previous-mask input
+  and iterative training are implemented (`--prev-mask --iterative-clicks`) but
+  a checkpoint trained with them has not yet replaced it.
 
 ## Acknowledgements
 

@@ -16,6 +16,26 @@ Run from the repo root:
     python scripts/train_full.py                      # uses configs/train.yaml
     python scripts/train_full.py --device cpu --epochs 2   # quick dry run
 
+Iterative (multi-click) training, RITM-style, fine-tuned from an existing run:
+
+    python scripts/train_full.py --init-from results/run-7/best.pt \
+        --prev-mask --iterative-clicks 3 --lr 0.0001 --max-images 0 \
+        --checkpoint-dir outputs/iterative/checkpoints \
+        --history-path outputs/iterative/history.json
+
+  --iterative-clicks N  before each supervised step, run the model 0..N times
+                        without gradient and add a corrective click where it was
+                        wrong (src/training/interaction.py). Teaches the model
+                        what clicks two and onward mean. Validation then reports
+                        IoU after --val-clicks clicks (default N) and selects the
+                        best epoch on that, plus single-click IoU for comparison.
+  --prev-mask           give the model a sixth input channel holding its own
+                        previous prediction, so a later click corrects the mask
+                        rather than predicting afresh. Weights from --init-from
+                        are widened with zero filters for the new channel.
+  --init-from PATH      start from another run's weights with a fresh optimizer.
+                        Ignored when --auto-resume finds a checkpoint to resume.
+
 The test split is touched exactly once, at the very end. Peeking at it during
 development is how you end up reporting a number that means nothing.
 """
@@ -38,9 +58,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data.ade20k import discover_samples
 from src.data.dataset import ClickSegmentationDataset
 from src.data.splits import split_image_paths
-from src.model.build import build_model
+from src.model.build import build_model, expand_input_channels
+from src.model.unet import migrate_legacy_state_dict
 from src.training.checkpoints import load_checkpoint, save_checkpoint
 from src.training.device import get_device
+from src.training.interaction import add_training_clicks, run_interaction
 from src.training.losses import MultiMaskLoss
 from src.training.metrics import best_of_n_iou, iou_score
 
@@ -82,25 +104,59 @@ def build_loader(
     )
 
 
+class Interaction:
+    """Settings for iterative training and multi-click validation.
+
+    `max_iters` 0 with `in_channels` 5 is the original single-click behaviour,
+    and `run_epoch` then takes exactly the code path it always did.
+    """
+
+    def __init__(
+        self,
+        max_iters: int,
+        val_clicks: int,
+        in_channels: int,
+        radius: int,
+        click_stride: int,
+        prev_mask_drop: float,
+        seed: int,
+    ) -> None:
+        self.max_iters = max_iters
+        self.val_clicks = val_clicks
+        self.in_channels = in_channels
+        self.radius = radius
+        self.click_stride = click_stride
+        self.prev_mask_drop = prev_mask_drop
+        self.rng = np.random.default_rng(seed)
+
+    @property
+    def active(self) -> bool:
+        return self.max_iters > 0 or self.in_channels != 5 or self.val_clicks > 1
+
+
 def run_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
     criterion: torch.nn.Module,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
-) -> tuple[float, float, float]:
+    interaction: Interaction | None = None,
+) -> dict[str, float]:
     """One pass over `loader`. Trains if an optimizer is given, else evaluates.
 
-    Returns (mean loss, mean selected IoU, mean best-of-N IoU), all averaged
-    per sample rather than per batch so a smaller final batch doesn't skew the
-    numbers. For a single-mask model the two IoUs are identical.
+    Returns per-sample means (so a smaller final batch doesn't skew them):
+        loss        the training loss
+        iou         the headline IoU: single-click, or after `val_clicks`
+                    clicks when interaction is active
+        best_of_n   oracle IoU over candidates, at the same click count
+        iou_at_1    single-click IoU (equal to `iou` when not interactive)
+    For a single-mask model iou and best_of_n are identical.
     """
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
+    interactive = interaction is not None and interaction.active
 
-    total_loss = 0.0
-    total_iou = 0.0
-    total_best = 0.0
+    totals = {"loss": 0.0, "iou": 0.0, "best_of_n": 0.0, "iou_at_1": 0.0}
     total_samples = 0
 
     with torch.set_grad_enabled(is_train):
@@ -109,27 +165,65 @@ def run_epoch(
             batch_size = inputs.shape[0]
 
             if is_train:
+                if interactive:
+                    # 0..max_iters corrective clicks, sampled per batch as RITM
+                    # does, so the model sees every click count during training.
+                    num_iters = int(interaction.rng.integers(0, interaction.max_iters + 1))
+                    inputs = add_training_clicks(
+                        model,
+                        inputs,
+                        targets,
+                        num_iters,
+                        in_channels=interaction.in_channels,
+                        radius=interaction.radius,
+                        click_stride=interaction.click_stride,
+                        prev_mask_drop=interaction.prev_mask_drop,
+                    )
                 optimizer.zero_grad()
-
-            logits, scores = model(inputs)
-            loss = criterion(logits, targets, scores)
-
-            if is_train:
+                logits, scores = model(inputs)
+                loss = criterion(logits, targets, scores)
                 loss.backward()
                 optimizer.step()
 
-            detached = logits.detach()
-            detached_scores = scores.detach() if scores is not None else None
-            total_loss += loss.item() * batch_size
-            total_iou += iou_score(detached, targets, scores=detached_scores) * batch_size
-            total_best += best_of_n_iou(detached, targets) * batch_size
+                detached = logits.detach()
+                detached_scores = scores.detach() if scores is not None else None
+                iou = iou_score(detached, targets, scores=detached_scores)
+                totals["loss"] += loss.item() * batch_size
+                totals["iou"] += iou * batch_size
+                totals["best_of_n"] += best_of_n_iou(detached, targets) * batch_size
+                totals["iou_at_1"] += iou * batch_size  # not separately measured in training
+
+            elif interactive:
+                # The evaluation protocol: click, predict, correct, repeat. The
+                # stride keeps click placement cheap enough to run every epoch;
+                # scripts/evaluate.py uses stride 1 for the reported numbers.
+                result = run_interaction(
+                    model,
+                    inputs,
+                    targets,
+                    interaction.val_clicks,
+                    in_channels=interaction.in_channels,
+                    radius=interaction.radius,
+                    click_stride=interaction.click_stride,
+                )
+                loss = criterion(result["final_logits"], targets, result["final_scores"])
+                totals["loss"] += loss.item() * batch_size
+                totals["iou"] += result["iou"][:, -1].sum().item()
+                totals["best_of_n"] += result["oracle"][:, -1].sum().item()
+                totals["iou_at_1"] += result["iou"][:, 0].sum().item()
+
+            else:
+                logits, scores = model(inputs)
+                loss = criterion(logits, targets, scores)
+                iou = iou_score(logits, targets, scores=scores)
+                totals["loss"] += loss.item() * batch_size
+                totals["iou"] += iou * batch_size
+                totals["best_of_n"] += best_of_n_iou(logits, targets) * batch_size
+                totals["iou_at_1"] += iou * batch_size
+
             total_samples += batch_size
 
-    return (
-        total_loss / total_samples,
-        total_iou / total_samples,
-        total_best / total_samples,
-    )
+    return {key: value / total_samples for key, value in totals.items()}
 
 
 def main() -> None:
@@ -154,10 +248,37 @@ def main() -> None:
     parser.add_argument(
         "--auto-resume",
         action="store_true",
-        help="Resume from outputs/checkpoints/latest.pt if it exists. Lets a long run "
+        help="Resume from <checkpoint-dir>/latest.pt if it exists. Lets a long run "
         "continue across several jobs after a walltime kill.",
     )
     parser.add_argument("--skip-test", action="store_true", help="Skip the final test-set evaluation")
+    parser.add_argument(
+        "--init-from",
+        default=None,
+        help="Start from this checkpoint's weights with a fresh optimizer (fine-tuning). "
+        "Ignored if --auto-resume finds a checkpoint.",
+    )
+    parser.add_argument(
+        "--prev-mask",
+        action="store_true",
+        help="Add a sixth input channel carrying the model's previous prediction",
+    )
+    parser.add_argument(
+        "--iterative-clicks",
+        type=int,
+        default=0,
+        help="Max corrective clicks added per training step (0 = single-click training as before)",
+    )
+    parser.add_argument(
+        "--val-clicks",
+        type=int,
+        default=None,
+        help="Clicks used for validation/test IoU; default = --iterative-clicks, or 1",
+    )
+    parser.add_argument("--prev-mask-drop", type=float, default=0.2, help="Fraction of samples whose previous mask is zeroed")
+    parser.add_argument("--click-stride", type=int, default=4, help="Grid stride for click placement during training")
+    parser.add_argument("--checkpoint-dir", default=None, help="Override checkpoint.dir")
+    parser.add_argument("--history-path", default=None, help="Override training.history_path")
     args = parser.parse_args()
 
     with open(args.data_config) as f:
@@ -179,6 +300,32 @@ def main() -> None:
         training["batch_size"] = args.batch_size
     if args.lr is not None:
         training["lr"] = args.lr
+    if args.checkpoint_dir is not None:
+        train_config["checkpoint"]["dir"] = args.checkpoint_dir
+    if args.history_path is not None:
+        training["history_path"] = args.history_path
+
+    in_channels = 6 if args.prev_mask else 5
+    train_config["model"]["in_channels"] = in_channels
+    val_clicks = args.val_clicks if args.val_clicks is not None else max(1, args.iterative_clicks)
+    if args.iterative_clicks > 0 and click_config.get("encoding", "disk") != "disk":
+        raise SystemExit("iterative training draws disk clicks; set clicks.encoding: disk")
+    if args.prev_mask and args.iterative_clicks == 0:
+        print("WARNING: --prev-mask without --iterative-clicks: the previous-mask channel will only ever be zero")
+    interaction = Interaction(
+        max_iters=args.iterative_clicks,
+        val_clicks=val_clicks,
+        in_channels=in_channels,
+        radius=int(click_config.get("radius", 5)),
+        click_stride=args.click_stride,
+        prev_mask_drop=args.prev_mask_drop,
+        seed=train_config["seed"],
+    )
+    if interaction.active:
+        print(
+            f"Interactive training: up to {args.iterative_clicks} corrective clicks per step, "
+            f"{in_channels} input channels, validation IoU after {val_clicks} click(s)"
+        )
 
     torch.manual_seed(train_config["seed"])
     device = get_device(args.device or train_config.get("device", "auto"))
@@ -269,27 +416,46 @@ def main() -> None:
             f"(best val IoU {best_val_iou:.4f} at epoch {best_epoch}, "
             f"{len(history)} epochs of history)"
         )
+        if args.init_from:
+            print(f"--init-from {args.init_from} ignored: resuming an existing run")
+    elif args.init_from:
+        # Weights only. The optimizer starts fresh: Adam's moments from a run
+        # with a different objective (single-click) would mis-scale the first
+        # updates of this one. A five-channel checkpoint is widened for a
+        # six-channel model with zero filters, so step one reproduces the old
+        # model exactly and the new channel grows in from there.
+        source = torch.load(args.init_from, map_location=device, weights_only=False)
+        state_dict = migrate_legacy_state_dict(source["model_state_dict"])
+        state_dict = expand_input_channels(state_dict, in_channels)
+        model.load_state_dict(state_dict)
+        print(
+            f"Initialised from {args.init_from} (epoch {source.get('epoch')}, "
+            f"val IoU {source.get('best_val_iou')}), optimizer fresh"
+        )
 
     epochs = training["epochs"]
     patience = training["early_stopping_patience"]
+    clicks_label = f"@{val_clicks}" if interaction.active else ""
 
     for epoch in range(start_epoch, epochs + 1):
         started = time.time()
-        train_loss, train_iou, _ = run_epoch(model, train_loader, criterion, device, optimizer)
-        val_loss, val_iou, val_best = run_epoch(model, val_loader, criterion, device)
+        train = run_epoch(model, train_loader, criterion, device, optimizer, interaction)
+        val = run_epoch(model, val_loader, criterion, device, interaction=interaction)
         elapsed = time.time() - started
 
         lr_now = optimizer.param_groups[0]["lr"]
-        scheduler.step(val_iou)
+        scheduler.step(val["iou"])
 
         history.append(
             {
                 "epoch": epoch,
-                "train_loss": train_loss,
-                "train_iou": train_iou,
-                "val_loss": val_loss,
-                "val_iou": val_iou,
-                "val_best_of_n_iou": val_best,
+                "train_loss": train["loss"],
+                "train_iou": train["iou"],
+                "val_loss": val["loss"],
+                "val_iou": val["iou"],
+                "val_best_of_n_iou": val["best_of_n"],
+                "val_iou_at_1": val["iou_at_1"],
+                "val_clicks": val_clicks,
                 "lr": lr_now,
                 "seconds": elapsed,
             }
@@ -301,8 +467,8 @@ def main() -> None:
             json.dump(history, f, indent=2)
 
         marker = ""
-        if val_iou > best_val_iou:
-            best_val_iou, best_epoch = val_iou, epoch
+        if val["iou"] > best_val_iou:
+            best_val_iou, best_epoch = val["iou"], epoch
             marker = "  <- best"
 
         state = {
@@ -319,19 +485,31 @@ def main() -> None:
             "train_settings": {
                 "image_size": list(train_config["data"]["image_size"]),
                 "clicks": dict(click_config),
+                "in_channels": in_channels,
+                "iterative_clicks": args.iterative_clicks,
+                "val_clicks": val_clicks,
+                # Which images the split was built from. evaluate.py needs this
+                # to rebuild the same validation split, not one that overlaps
+                # the training images.
+                "max_images": int(max_images or 0),
+                "init_from": args.init_from,
             },
         }
         if marker:
-            save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, val_loss, state)
+            save_checkpoint(checkpoint_dir / "best.pt", epoch, model, optimizer, val["loss"], state)
 
+        extra = ""
+        if interaction.active:
+            extra = f" IoU@1={val['iou_at_1']:.4f}"
+        if val["best_of_n"] > val["iou"] + 1e-6:
+            extra += f" (best-of-N {val['best_of_n']:.4f})"
         print(
             f"epoch {epoch:3d}/{epochs}  "
-            f"train loss={train_loss:.4f} IoU={train_iou:.4f}  |  "
-            f"val loss={val_loss:.4f} IoU={val_iou:.4f}"
-            + (f" (best-of-N {val_best:.4f})" if val_best > val_iou + 1e-6 else "")
-            + f"  lr={lr_now:.2e}  ({elapsed:.0f}s){marker}"
+            f"train loss={train['loss']:.4f} IoU={train['iou']:.4f}  |  "
+            f"val loss={val['loss']:.4f} IoU{clicks_label}={val['iou']:.4f}{extra}"
+            f"  lr={lr_now:.2e}  ({elapsed:.0f}s){marker}"
         )
-        save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, train_loss, state)
+        save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, train["loss"], state)
 
         # Stop once validation has not improved for `patience` epochs. Training
         # past that point only widens the train/validation gap.
@@ -342,7 +520,7 @@ def main() -> None:
             )
             break
 
-    print(f"\nBest validation IoU: {best_val_iou:.4f} at epoch {best_epoch}")
+    print(f"\nBest validation IoU{clicks_label}: {best_val_iou:.4f} at epoch {best_epoch}")
 
     if args.skip_test:
         print("Skipping test evaluation (--skip-test).")
@@ -353,19 +531,22 @@ def main() -> None:
     print("Evaluating best checkpoint on the held-out test split...")
     load_checkpoint(checkpoint_dir / "best.pt", model, optimizer, device)
     test_loader = build_loader(splits["test"], train_config, click_config, shuffle=False, deterministic=True, split_name="test")
-    test_loss, test_iou, test_best = run_epoch(model, test_loader, criterion, device)
+    test = run_epoch(model, test_loader, criterion, device, interaction=interaction)
+    extra = f"  IoU@1={test['iou_at_1']:.4f}" if interaction.active else ""
     print(
-        f"Test loss={test_loss:.4f}  Test IoU={test_iou:.4f}"
-        + (f"  (best-of-N {test_best:.4f})" if test_best > test_iou + 1e-6 else "")
+        f"Test loss={test['loss']:.4f}  Test IoU{clicks_label}={test['iou']:.4f}{extra}"
+        + (f"  (best-of-N {test['best_of_n']:.4f})" if test["best_of_n"] > test["iou"] + 1e-6 else "")
         + f"  ({len(test_loader.dataset)} instances)"
     )
 
     summary = {
         "best_epoch": best_epoch,
         "best_val_iou": best_val_iou,
-        "test_loss": test_loss,
-        "test_iou": test_iou,
-        "test_best_of_n_iou": test_best,
+        "val_clicks": val_clicks,
+        "test_loss": test["loss"],
+        "test_iou": test["iou"],
+        "test_iou_at_1": test["iou_at_1"],
+        "test_best_of_n_iou": test["best_of_n"],
         "splits": {name: len(paths) for name, paths in splits.items()},
         "history": history,
     }

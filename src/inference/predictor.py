@@ -17,10 +17,19 @@ come from configs/train.yaml and configs/clicks.yaml alongside it. A
 settings inside itself, so it loads with no repo checkout at all; that is what
 the hosted app pulls from the Hugging Face model repo. Everything about the
 architecture is read from the weight shapes in both cases.
+
+Models with a **previous-mask channel** (six input channels) are stateful by
+design: the mask after click k depends on the mask after click k-1. The
+interface is stateless -- it hands over the full click list every time -- so the
+predictor replays the clicks in order, feeding each step the probability map
+from the one before. Intermediate maps are cached per (image, click prefix), so
+adding one click costs one forward pass, and undo costs none.
 """
 
 from __future__ import annotations
 
+import hashlib
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -33,8 +42,8 @@ from src.data.dataset import _normalize_size
 from src.data.encoding import encode_clicks
 from src.model.build import build_model, detect_arch
 from src.model.unet import migrate_legacy_state_dict
-from src.training.metrics import select_masks
 from src.training.device import get_device
+from src.training.interaction import PREVIOUS_MASK_CHANNEL, predict_probs
 
 
 class ClickPredictor:
@@ -44,6 +53,9 @@ class ClickPredictor:
         train_config_path: str | Path = "configs/train.yaml",
         clicks_config_path: str | Path = "configs/clicks.yaml",
         device: str | None = None,
+        selection: str = "score",
+        flip_tta: bool = False,
+        cache_size: int = 256,
     ) -> None:
         self.device = get_device(device or "auto")
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
@@ -54,14 +66,18 @@ class ClickPredictor:
         # deployment never has to ship them.
         inference_config = checkpoint.get("inference_config")
         if inference_config is None:
-            with open(train_config_path) as f:
-                train_config = yaml.safe_load(f)
-            with open(clicks_config_path) as f:
-                click_config = yaml.safe_load(f)["clicks"]
-            inference_config = {
-                "image_size": train_config["data"]["image_size"],
-                "clicks": click_config,
-            }
+            recorded = checkpoint.get("train_settings")
+            if recorded is not None:
+                inference_config = {"image_size": recorded["image_size"], "clicks": recorded["clicks"]}
+            else:
+                with open(train_config_path) as f:
+                    train_config = yaml.safe_load(f)
+                with open(clicks_config_path) as f:
+                    click_config = yaml.safe_load(f)["clicks"]
+                inference_config = {
+                    "image_size": train_config["data"]["image_size"],
+                    "clicks": click_config,
+                }
 
         self.click_config = inference_config["clicks"]
         self.image_size = _normalize_size(inference_config["image_size"])  # (H, W)
@@ -82,9 +98,70 @@ class ClickPredictor:
 
         self.arch = arch_config
         self.num_masks = arch_config["num_masks"]
+        self.in_channels = arch_config.get("in_channels", 5)
+        self.uses_previous_mask = self.in_channels == PREVIOUS_MASK_CHANNEL + 1
+        self.selection = selection
+        self.flip_tta = flip_tta
         provenance = checkpoint.get("provenance", checkpoint)
         self.trained_epoch = provenance.get("epoch")
         self.trained_val_iou = provenance.get("best_val_iou")
+
+        self._cache: OrderedDict[tuple, np.ndarray] = OrderedDict()
+        self._cache_size = cache_size
+
+    # ------------------------------------------------------------------ core
+
+    def _forward(
+        self,
+        image_chw: np.ndarray,
+        clicks: list[Click],
+        previous: np.ndarray | None,
+        threshold: float,
+    ) -> np.ndarray:
+        """One model pass at working resolution -> probability map (H, W)."""
+        model_h, model_w = self.image_size
+        encoded = encode_clicks(
+            clicks,
+            shape=(model_h, model_w),
+            radius=self.click_config.get("radius", 5),
+            encoding=self.click_config.get("encoding", "disk"),
+            max_distance=self.click_config.get("max_distance", 64.0),
+        )
+        channels = [image_chw, encoded]
+        if self.uses_previous_mask:
+            if previous is None:
+                previous = np.zeros((model_h, model_w), dtype=np.float32)
+            channels.append(previous[None].astype(np.float32))
+
+        model_input = torch.from_numpy(np.concatenate(channels, axis=0)).float().unsqueeze(0)
+        probs, _, _ = predict_probs(
+            self.model,
+            model_input.to(self.device),
+            selection=self.selection,
+            flip_tta=self.flip_tta,
+            threshold=threshold,
+        )
+        return probs[0, 0].cpu().numpy()
+
+    def _remember(self, key: tuple, probs: np.ndarray) -> None:
+        self._cache[key] = probs
+        while len(self._cache) > self._cache_size:
+            self._cache.popitem(last=False)
+
+    def _replay(
+        self, image_key: str, image_chw: np.ndarray, clicks: list[Click], threshold: float
+    ) -> np.ndarray:
+        """Feed the clicks one at a time, each step seeing the previous mask."""
+        probs = None
+        for k in range(1, len(clicks) + 1):
+            prefix = clicks[:k]
+            key = (image_key, tuple((c.y, c.x, c.positive) for c in prefix), self.selection, threshold)
+            cached = self._cache.get(key)
+            if cached is None:
+                cached = self._forward(image_chw, prefix, probs, threshold)
+                self._remember(key, cached)
+            probs = cached
+        return probs
 
     def predict(
         self,
@@ -116,22 +193,14 @@ class ClickPredictor:
             for c in clicks
         ]
 
-        encoded = encode_clicks(
-            scaled,
-            shape=(model_h, model_w),
-            radius=self.click_config.get("radius", 5),
-            encoding=self.click_config.get("encoding", "disk"),
-            max_distance=self.click_config.get("max_distance", 64.0),
-        )
-
         image_chw = resized.astype(np.float32).transpose(2, 0, 1) / 255.0
-        model_input = torch.from_numpy(np.concatenate([image_chw, encoded], axis=0)).float()
 
-        with torch.no_grad():
-            logits, scores = self.model(model_input.unsqueeze(0).to(self.device))
-            # A multi-mask model offers several interpretations of the click
-            # (e.g. shirt / torso / person); the score head picks one.
-            probs = torch.sigmoid(select_masks(logits, scores))[0, 0].cpu().numpy()
+        if self.uses_previous_mask:
+            image_key = hashlib.sha1(resized.tobytes()).hexdigest()
+            probs = self._replay(image_key, image_chw, scaled, threshold)
+        else:
+            # Stateless model: every click is in the channels already, one pass.
+            probs = self._forward(image_chw, scaled, None, threshold)
 
         # Back to the user's resolution. The probability map is resized rather
         # than the thresholded mask, so the boundary is interpolated smoothly
