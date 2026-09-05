@@ -315,8 +315,11 @@ def main() -> None:
             "seconds": time.time() - started,
         }
     )
-    label = args.label or f"{Path(args.checkpoint)} [{args.split}, {args.selection}"
-    label += ", flip-tta]" if args.flip_tta else "]"
+    if args.label:
+        label = args.label
+    else:
+        options = [args.split, args.selection] + (["flip-tta"] if args.flip_tta else [])
+        label = f"{Path(args.checkpoint)} [{', '.join(options)}]"
     print_report(summary, label)
 
     if args.output:

@@ -428,9 +428,12 @@ def main() -> None:
         state_dict = migrate_legacy_state_dict(source["model_state_dict"])
         state_dict = expand_input_channels(state_dict, in_channels)
         model.load_state_dict(state_dict)
+        source_iou = source.get("best_val_iou")
         print(
             f"Initialised from {args.init_from} (epoch {source.get('epoch')}, "
-            f"val IoU {source.get('best_val_iou')}), optimizer fresh"
+            f"val IoU {source_iou:.4f}), optimizer fresh"
+            if source_iou is not None
+            else f"Initialised from {args.init_from}, optimizer fresh"
         )
 
     epochs = training["epochs"]
