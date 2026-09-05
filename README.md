@@ -4,11 +4,12 @@ Interactive object segmentation. Load an image, click an object, get a mask for
 that object.
 
 The model is a UNet-style encoder-decoder with an ImageNet-pretrained ResNet-34
-encoder. It takes five input channels: the RGB image plus two channels encoding
-where the user clicked (one for "this is the object", one for "this is not"),
-and returns three candidate masks with a predicted quality score for each, so
-that an ambiguous click (a person's shirt could mean shirt, torso, or whole
-person) does not have to be averaged into one blurry answer.
+encoder, reaching **0.6194 IoU from a single click** on held-out ADE20K. It
+takes five input channels: the RGB image plus two channels encoding where the
+user clicked (one for "this is the object", one for "this is not"), and returns
+three candidate masks with a predicted quality score for each, so that an
+ambiguous click (a person's shirt could mean shirt, torso, or whole person)
+does not have to be averaged into one blurry answer.
 
 Trained by us on ADE20K. The encoder starts from ImageNet weights, but no
 pretrained SAM or other off-the-shelf interactive segmenter is used at any
@@ -65,19 +66,39 @@ outside the training distribution and give poor results.
 Trained on 12,003 ADE20K images split 70/20/10 by image (167k / 49k / 24k
 clickable object instances).
 
-| Change | Test IoU |
-| --- | --- |
-| baseline: from scratch, 128x128, depth 3 | 0.4990 |
-| + more data (3k to 10k images) | 0.5035 |
-| + 384x512 input, depth 4, neighbour negatives | 0.5125 |
-| + **ImageNet-pretrained encoder** | **0.5710** |
-| + more data again (3k to 12k) | val 0.6175 |
+Single-click IoU, each row a controlled change from the one above it. Test IoU
+is the held-out split, touched once on the epoch chosen by validation.
 
-Two findings worth noting. Pretraining was the single largest improvement,
-consistent with the interactive-segmentation literature, where every method
-reaching high scores starts from a pretrained backbone. And more data helped
-ten times as much *after* pretraining than before it — the from-scratch model
-could not fit the data well enough for extra examples to matter.
+| # | Change | Images | Test IoU |
+| --- | --- | --- | --- |
+| 1 | baseline: from scratch, 128x128, depth 3 | 3k | 0.4990 |
+| 2 | + more data | 10k | 0.5035 |
+| 3 | + 384x512 input, depth 4, neighbour negatives | 3k | 0.5125 |
+| 4 | + **ImageNet-pretrained ResNet-34 encoder** | 3k | **0.5710** |
+| 5 | + more data (killed at walltime on its best epoch) | 12k | val 0.6175 |
+| 6 | + **3 candidate masks with a score head** | 3k | **0.5796** |
+| 7 | run 6 architecture at full data, converged | 12k | **0.6194** |
+| 8 | slot architecture, 64 masks + click selection | 12k | val 0.4294 |
+
+**Run 7 is the shipped model**: test IoU 0.6194 over 24,271 held-out
+instances, validation 0.6191. It converged on its own — early stopping at
+epoch 76 with the best at 56.
+
+Four findings, each from a controlled comparison:
+
+- **Pretraining is the largest single factor (+0.0585).** Consistent with the
+  literature, where every method reaching high scores starts pretrained.
+- **Data volume only pays once the model can overfit.** Tripling the data from
+  scratch bought +0.0045; the same increase with a pretrained encoder bought
+  +0.045, ten times as much.
+- **Feeding the click *into* the network is worth about 0.19.** Run 8 removes
+  it — predicting every object at once and selecting afterwards — and drops to
+  0.4294. That is three times the pretraining gain, and it is the strongest
+  justification for the design.
+- **The score head leaves ~0.09 unclaimed.** Run 7 scores 0.6194 selected but
+  **0.7068 best-of-N**: the right mask is among the three candidates and the
+  selector picks a worse one. Quadrupling the data moved that gap by 0.005, so
+  it is not a data problem.
 
 Measured against strategies that learn nothing, on the same test set:
 
@@ -86,14 +107,17 @@ Measured against strategies that learn nothing, on the same test set:
 | random prediction | 0.041 |
 | predict everything as foreground | 0.048 |
 | fixed disk drawn at the click | 0.116 |
-| **this model** | **0.4990** |
+| **this model** | **0.6194** |
 
 That comparison matters because IoU is not accuracy: a random prediction scores
-near zero on it, not 0.5. The model is roughly four times better than the
+near zero on it, not 0.5. The model is roughly five times better than the
 strongest strategy that knows where you clicked but has learned nothing else.
 
-It is still well short of a polished segmenter. Masks are soft at boundaries
-and can bleed into a neighbouring object.
+It is still short of a polished segmenter. Masks are soft at boundaries and can
+bleed into a neighbouring object, and **extra clicks help less than they
+should** — the model never sees its own previous mask, so click two is a fresh
+prediction rather than a correction. Multi-click accuracy (NoC), the field's
+standard metric, is not measured here.
 
 ## Repository layout
 
@@ -104,7 +128,7 @@ configs/          YAML configuration, no hardcoded hyperparameters
   train.yaml        model, training, checkpointing
 src/
   data/             loading, click simulation, encoding, splits
-  model/            UNet, ResNet-UNet, construction from config
+  model/            UNet, ResNet-UNet, slot UNet, construction from config
   training/         losses, metrics, checkpoints, device selection
   inference/        running a checkpoint on a real click
   app/              the web interface: layout and page text
@@ -115,6 +139,7 @@ scripts/
   train_simple.py   the whole pipeline in one readable file
   train.py          overfit sanity check
   train_full.py     real training with validation and test evaluation
+  train_slots.py    training for the slot architecture (whole-image examples)
   export_ade20k.py  build the dataset from the Hugging Face mirror
   analyze_dataset.py  measure object and class statistics
   metacentrum/      PBS job scripts for the cluster
@@ -125,8 +150,9 @@ notebooks/
   results.ipynb     training curves, baselines, example predictions
 ```
 
-Run the tests with `python tests/test_app_wiring.py`. They build a throwaway
-model, so they work on any machine in a couple of seconds.
+Run the tests with `python tests/test_app_wiring.py` and
+`python tests/test_slot_model.py`. Both build a throwaway model, so they work on
+any machine in a couple of seconds with no checkpoint and no network.
 
 ## Understanding the code
 
