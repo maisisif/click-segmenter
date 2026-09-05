@@ -80,7 +80,7 @@ is the held-out split, touched once on the epoch chosen by validation.
 | 5 | + more data (killed at walltime on its best epoch) | 12k | val 0.6175 |
 | 6 | + **3 candidate masks with a score head** | 3k | **0.5796** |
 | 7 | run 6 architecture at full data, converged | 12k | **0.6194** |
-| 8 | slot architecture, 64 masks + click selection | 12k | val 0.4294 |
+| 8 | slot architecture, 64 masks + click selection *(unfinished)* | 12k | val 0.4294 |
 
 **Run 7 is the shipped model**: test IoU 0.6194 over 24,271 held-out
 instances, validation 0.6191. It converged on its own — early stopping at
@@ -94,9 +94,10 @@ Four findings, each from a controlled comparison:
   scratch bought +0.0045; the same increase with a pretrained encoder bought
   +0.045, ten times as much.
 - **Feeding the click *into* the network is worth about 0.19.** Run 8 removes
-  it — predicting every object at once and selecting afterwards — and drops to
-  0.4294. That is three times the pretraining gain, and it is the strongest
-  justification for the design.
+  it — predicting every object at once and selecting afterwards — and reached
+  0.4294 before being stopped at walltime, so that gap is an upper bound. Even
+  so it is three times the pretraining gain, and the strongest justification for
+  the design.
 - **The score head leaves ~0.09 unclaimed.** Run 7 scores 0.6194 selected but
   **0.7068 best-of-N**: the right mask is among the three candidates and the
   selector picks a worse one. Quadrupling the data moved that gap by 0.005, so

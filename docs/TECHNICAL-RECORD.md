@@ -327,7 +327,7 @@ silently run stale code through two full twelve-hour runs.
 | 5 | Same, full data — killed at walltime on its best epoch | 12,003 | 0.6175 | not reached | — |
 | 6 | **+ 3 candidate masks and score head** | 3,000 | 0.5726 | 0.5796 | 0.6722 |
 | 7 | Run 6 architecture at full data — converged | 12,003 | **0.6191** | **0.6194** | 0.7068 |
-| 8 | Model C — 64 slots, Hungarian matching | 12,003 | 0.4294 | pending | 0.4692 |
+| 8 | Model C — 64 slots, Hungarian matching *(unfinished)* | 12,003 | 0.4294 | not measured | 0.4692 |
 
 ### Trivial baselines, on the same test split
 
@@ -349,6 +349,33 @@ and across those twenty epochs training IoU climbed 0.72 → 0.77 while validati
 fell 0.619 → 0.602. Validation and test agreeing to four decimal places is the
 clearest evidence available that the splits have not drifted apart.
 
+### Run 8 — unfinished
+
+**Run 8 has not converged and has no test number.** It was cut off at walltime
+on **epoch 48**, which was also its best epoch, so early stopping never fired and
+the final test evaluation never ran. Reported figures are validation only:
+
+| | |
+| --- | --- |
+| Epochs completed | 48 of a 200 cap, one 12-hour job |
+| Best validation IoU | **0.4294**, at epoch 48 — the last epoch run |
+| Oracle over candidates | 0.4692 |
+| Final train / val loss | 0.3862 / 0.6573 |
+| Learning rate at cutoff | 3×10⁻⁴ — never decayed |
+| Time per epoch | ~860 s on an NVIDIA L40S |
+
+Being cut off on its best epoch means 0.4294 is formally a lower bound. The
+trajectory says there is little underneath it: across epochs 29–48 validation
+IoU moved **+0.007 in total** while training loss fell 0.49 → 0.39 and
+validation loss *rose* 0.638 → 0.657. That is overfitting, not a model still
+climbing. Early stopping had not fired only because improvements of order 0.0003
+kept resetting its counter, which is also why the learning rate never decayed.
+
+The consequence for the comparison in section 9: the ≈0.19 gap between Model B
+and Model C is an **upper** bound, since further training could only narrow it.
+The flattening above suggests it would not narrow by much, but the honest
+statement is that Model C was stopped rather than finished.
+
 ---
 
 ## 9. What is established by direct experiment
@@ -367,9 +394,10 @@ cannot fit the data at all does not. Measured twice independently, at +0.045 for
 the single-mask pair and +0.0398 for the multi-mask pair.
 
 **Conditioning on the click is worth ≈0.19.** Model B reaches 0.6194 on test;
-Model C converged at 0.4294 on validation. Same encoder family, same data, same
-resolution — the difference is that Model B sees the click while it computes and
-Model C only uses it to select afterwards. This is **three times the pretraining
+Model C reached 0.4294 on validation before being stopped at walltime (see run 8
+above — this is an upper bound on the gap, not a converged comparison). Same
+encoder family, same data, same resolution — the difference is that Model B sees
+the click while it computes and Model C only uses it to select afterwards. This is **three times the pretraining
 gain** and is the strongest justification available for the whole design. It
 exists only because the alternative was built and measured.
 
@@ -537,7 +565,7 @@ See [DEPLOY.md](DEPLOY.md) for the procedure.
 | Aug 22–24 | Deployment path built: model export, config-free inference, three-page interface, hosting tooling, documentation, regression tests. Two silent defects found and fixed. |
 | Aug 24–26 | Run 7 across three chained jobs. Converges at epoch 56, early-stops at 76. Test IoU 0.6194 on 24,271 instances — the project's best result. |
 | Sep 3–4 | Model C designed and built. Half-resolution masks chosen by measuring the IoU ceiling. First run OOM-killed; cause found and fixed at source. |
-| Sep 5 | Run 8 converges at 0.4294. Model B retained as the deliverable; the comparison yields the ≈0.19 figure for click conditioning. |
+| Sep 5 | Run 8 stopped at walltime on epoch 48 at 0.4294 validation, with gains flattened to ~0.0003/epoch and validation loss rising. Model B retained as the deliverable; the comparison yields the ≈0.19 figure for click conditioning. |
 
 ---
 
@@ -572,8 +600,9 @@ bolted on, since every slot containing the click is naturally an alternative.
 Single-click IoU **0.6194** on 24,271 held-out instances, against 0.116 for a
 disk at the click and 0.041 for random. Three architectures built and compared,
 with every gain attributed to a controlled change: pretraining +0.0585, data
-volume +0.045, click conditioning ≈0.19, multi-mask +0.0086, resolution and
-negative sampling +0.009. Part of the remaining gap to published work is the
+volume +0.045, click conditioning ≈0.19 (upper bound — Model C was stopped
+before convergence), multi-mask +0.0086, resolution and negative sampling
++0.009. Part of the remaining gap to published work is the
 dataset — ADE20K is scene-heavy and stuff-heavy where the benchmarks are
 object-centric — and part is the three unimplemented mechanisms named above.
 
