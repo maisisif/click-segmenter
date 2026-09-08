@@ -106,18 +106,22 @@ def summarize_index(index: dict[str, list[int]]) -> dict[str, int]:
 
 
 class ClassSegmentationDataset(Dataset):
-    """(image, union mask) pairs for one class.
+    """(image, union masks) pairs for one or more classes.
 
-    `entries` is a list of (image_path, instance_ids). Only pass images that
-    contain the class unless negatives are wanted on purpose; an image with no
-    instances yields an all-zero mask, which the loss handles but the per-image
-    IoU does not (0/0), so `run_epoch` in the training script skips those in
-    the IoU average and counts them separately.
+    `entries` is a list of (image_path, instance_ids). For a single class,
+    instance_ids is a flat list of ids and the target is (1, H, W). For several
+    classes (Kassem, 2026-09-08: "a tensor of 2 masks per image") it is a list
+    with one id list per class, and the target is (C, H, W) with channel c the
+    union of class c's instances. Channels can overlap (a pillow on a bed).
+
+    An image with no instances of a class yields an all-zero channel, which the
+    loss handles but the per-image IoU does not (0/0), so `run_epoch` in the
+    training script skips those (image, class) pairs in the IoU average.
     """
 
     def __init__(
         self,
-        entries: list[tuple[Path, list[int]]],
+        entries: list[tuple[Path, list]],
         image_size: tuple[int, int],
         augment: bool = False,
         seed: int = 0,
@@ -130,20 +134,29 @@ class ClassSegmentationDataset(Dataset):
     def __len__(self) -> int:
         return len(self.entries)
 
+    @staticmethod
+    def per_class_ids(ids: list) -> list[list[int]]:
+        """Normalise a flat id list (one class) to the one-list-per-class form."""
+        if ids and isinstance(ids[0], (list, tuple)):
+            return [list(c) for c in ids]
+        return [list(ids)]
+
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         image_path, ids = self.entries[idx]
         image = np.array(Image.open(image_path).convert("RGB"))
-        mask = np.zeros(image.shape[:2], dtype=bool)
-        for instance_id in ids:
-            mask |= load_instance_mask(image_path, instance_id)
-
+        masks = []
+        for class_ids in self.per_class_ids(ids):
+            mask = np.zeros(image.shape[:2], dtype=bool)
+            for instance_id in class_ids:
+                mask |= load_instance_mask(image_path, instance_id)
+            masks.append(_resize_mask(mask, self.image_size))
         image = _resize_image(image, self.image_size)
-        mask = _resize_mask(mask, self.image_size)
+        mask = np.stack(masks, axis=0)  # (C, H, W)
 
         if self.augment and self.rng.random() < 0.5:
             image = image[:, ::-1]
-            mask = mask[:, ::-1]
+            mask = mask[:, :, ::-1]
 
         image_t = torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1).float() / 255.0
-        mask_t = torch.from_numpy(np.ascontiguousarray(mask)).unsqueeze(0).float()
+        mask_t = torch.from_numpy(np.ascontiguousarray(mask)).float()
         return image_t, mask_t

@@ -113,6 +113,26 @@ tail -20 ~/projects/click-segmenter/outputs/train.log
 cat ~/projects/click-segmenter/outputs/class/chair/counts.json   # image/instance counts he asked for
 ```
 
+**Two classes at once** (Kassem, 2026-09-08 after seeing the bed figure: "keep
+your design as it is, just add another mask for another object, a tensor of 2
+masks per image, make sure the new object exists in these bed images, and it
+has a high accuracy in the paper"). Same script, several names: the FIRST name
+picks the images (all contain a bed), each name is one output channel, IoU is
+per class over the images containing it, plus the mean. The log's
+"of the N bed images, M also contain a floor" line is the co-occurrence check
+he asked for. Floor is the default second class: 0.75 in the paper's Fig. 9
+and present in almost every bedroom.
+
+```bash
+qsub -v TRAIN_SCRIPT=scripts/train_class.py,EXTRA_ARGS="--class-name bed floor"      scripts/metacentrum/train.pbs
+tail -20 ~/projects/click-segmenter/outputs/train.log
+grep -E "also contain|TEST|Best val" ~/projects/click-segmenter/outputs/train.log
+cat ~/projects/click-segmenter/outputs/class/bed_floor/counts.json
+```
+
+Output goes to `outputs/class/bed_floor/`. The figure command below takes the
+same names: `--class-name bed floor`.
+
 **Qualitative figure for a one-class run** (Kassem, 2026-09-08: random test
 images with image / model output / ground truth / overlay). Rebuilds the run's
 exact test split from its cached `index_exact.json`, so it stays valid after the

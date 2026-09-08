@@ -25,6 +25,15 @@ On the cluster, through the shared job script:
 
 Everything lands under outputs/class/<class-name>/ so it can never clobber a
 click-model run. --auto-resume continues after a walltime kill as usual.
+
+Two (or more) classes, Kassem 2026-09-08 ("keep your design as it is, just add
+another mask for another object, a tensor of 2 masks per image, make sure the
+new object exists in these bed images"):
+    qsub -v TRAIN_SCRIPT=scripts/train_class.py,EXTRA_ARGS="--class-name bed floor" \
+         scripts/metacentrum/train.pbs
+The first name picks the images (all of them contain a bed); each name is one
+output channel; IoU is reported per class (over the images containing that
+class) and as the mean. Output goes to outputs/class/bed_floor/.
 """
 
 from __future__ import annotations
@@ -86,25 +95,32 @@ def run_epoch(
 
     Returns:
         loss        mean BCE+Dice per image
-        iou         chair-only IoU per image, averaged over images that contain
-                    the class (an image with no chair has no defined IoU)
-        iou_pooled  chair-only IoU with intersection and union summed over all
-                    pixels in the split (the "dataset IoU" some papers report)
+        iou         class-only IoU per image, averaged over the images that
+                    contain the class (an image with no chair has no defined
+                    chair IoU); with several classes, the mean over classes
+        iou_pooled  class-only IoU with intersection and union summed over all
+                    pixels in the split (the "dataset IoU" some papers report);
+                    with several classes, the mean over classes
+        per_class   the two numbers above for each output channel, in order
     """
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
     total_loss = 0.0
-    total_iou = 0.0
-    scored = 0
     total_samples = 0
-    inter_sum = 0.0
-    union_sum = 0.0
+    num_classes = None
+    total_iou = scored = inter_sum = union_sum = None
 
     with torch.set_grad_enabled(is_train):
         for inputs, targets in loader:
             inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             batch_size = inputs.shape[0]
+            if num_classes is None:
+                num_classes = targets.shape[1]
+                total_iou = torch.zeros(num_classes, dtype=torch.float64)
+                scored = torch.zeros(num_classes, dtype=torch.float64)
+                inter_sum = torch.zeros(num_classes, dtype=torch.float64)
+                union_sum = torch.zeros(num_classes, dtype=torch.float64)
 
             if is_train:
                 optimizer.zero_grad()
@@ -115,24 +131,37 @@ def run_epoch(
                 optimizer.step()
 
             with torch.no_grad():
+                # Everything below is per (image, class): shape (B, C).
                 preds = (torch.sigmoid(logits.detach()) > 0.5).float()
-                intersection = (preds * targets).sum(dim=(1, 2, 3))
-                union = ((preds + targets) > 0).float().sum(dim=(1, 2, 3))
-                has_target = targets.sum(dim=(1, 2, 3)) > 0
+                intersection = (preds * targets).sum(dim=(2, 3))
+                union = ((preds + targets) > 0).float().sum(dim=(2, 3))
+                has_target = targets.sum(dim=(2, 3)) > 0
                 per_image = intersection / union.clamp_min(EPS)
-                total_iou += per_image[has_target].sum().item()
-                scored += int(has_target.sum().item())
-                inter_sum += intersection.sum().item()
-                union_sum += union.sum().item()
+                total_iou += (per_image * has_target).sum(dim=0).double().cpu()
+                scored += has_target.sum(dim=0).double().cpu()
+                inter_sum += intersection.sum(dim=0).double().cpu()
+                union_sum += union.sum(dim=0).double().cpu()
 
             total_loss += loss.item() * batch_size
             total_samples += batch_size
 
+    if num_classes is None:
+        raise RuntimeError("empty loader")
+    iou_per_class = (total_iou / scored.clamp_min(1)).tolist()
+    pooled_per_class = (inter_sum / union_sum.clamp_min(EPS)).tolist()
     return {
         "loss": total_loss / max(total_samples, 1),
-        "iou": total_iou / max(scored, 1),
-        "iou_pooled": inter_sum / max(union_sum, EPS),
+        "iou": float(np.mean(iou_per_class)),
+        "iou_pooled": float(np.mean(pooled_per_class)),
+        "per_class": [{"iou": i, "iou_pooled": p} for i, p in zip(iou_per_class, pooled_per_class)],
     }
+
+
+def per_class_text(result: dict, class_names: list[str]) -> str:
+    """'bed=0.7353 floor=0.8012' for the log; empty for a single class."""
+    if len(class_names) < 2:
+        return ""
+    return " ".join(f"{name}={c['iou']:.4f}" for name, c in zip(class_names, result["per_class"]))
 
 
 def main() -> None:
@@ -140,7 +169,14 @@ def main() -> None:
     parser.add_argument("--data-config", default="configs/data.yaml")
     parser.add_argument("--train-config", default="configs/train.yaml")
     parser.add_argument("--data-root", default=None, help="Override dataset.root (absolute path on the cluster)")
-    parser.add_argument("--class-name", default="chair", help="ADE20K object name to segment")
+    parser.add_argument(
+        "--class-name",
+        nargs="+",
+        default=["chair"],
+        help="ADE20K object name(s) to segment. One name = one mask. Several names (Kassem, "
+        "2026-09-08: '--class-name bed floor') = one output channel per name; the FIRST name "
+        "chooses the images (every image contains it), the others get a mask wherever they occur.",
+    )
     parser.add_argument(
         "--match",
         default="exact",
@@ -179,9 +215,14 @@ def main() -> None:
     num_workers = args.num_workers if args.num_workers is not None else training["num_workers"]
     image_size = tuple(train_config["data"]["image_size"])
     seed = train_config["seed"]
-    class_name = args.class_name.strip().lower()
+    class_names = [c.strip().lower() for c in args.class_name]
+    if len(set(class_names)) != len(class_names):
+        raise SystemExit(f"duplicate class names: {class_names}")
+    anchor = class_names[0]  # the class that selects the images
+    class_name = "+".join(class_names)  # label used in logs and filenames
 
-    output_dir = Path(args.output_dir) if args.output_dir else Path("outputs") / "class" / class_name.replace(" ", "_")
+    default_dir = Path("outputs") / "class" / "_".join(c.replace(" ", "_") for c in class_names)
+    output_dir = Path(args.output_dir) if args.output_dir else default_dir
     checkpoint_dir = output_dir / "checkpoints"
     history_path = output_dir / "history.json"
     counts_path = output_dir / "counts.json"
@@ -190,7 +231,7 @@ def main() -> None:
     torch.manual_seed(seed)
     device = get_device(args.device or train_config.get("device", "auto"))
     print(f"Using device: {device}")
-    print(f"Class: {class_name!r} (match={args.match})  output: {output_dir}")
+    print(f"Classes: {class_names} (match={args.match}, images chosen by {anchor!r})  output: {output_dir}")
 
     root = Path(args.data_root or data_config["dataset"]["root"]).expanduser()
     image_paths = discover_samples(root)
@@ -203,46 +244,79 @@ def main() -> None:
         image_paths = [image_paths[i] for i in keep]
         print(f"Subsampled to {len(image_paths)} images (max_images={args.max_images})")
 
-    # Which images contain the class, and which instances. Cached per class.
-    started = time.time()
-    index = build_class_index(
-        image_paths,
-        class_name,
-        match=args.match,
-        cache_path=output_dir / f"index_{args.match}.json",
-        workers=max(num_workers, 4),
-    )
+    # Which images contain each class, and which instances. Cached per class.
+    # The single-class file keeps its old name so existing runs (chair, bed)
+    # and scripts/visualize_class.py still find it.
+    indices: dict[str, dict[str, list[int]]] = {}
+    for name in class_names:
+        started = time.time()
+        cache_name = f"index_{args.match}.json" if len(class_names) == 1 else f"index_{args.match}_{name.replace(' ', '_')}.json"
+        indices[name] = build_class_index(
+            image_paths, name, match=args.match, cache_path=output_dir / cache_name, workers=max(num_workers, 4)
+        )
+        t = summarize_index(indices[name])
+        print(
+            f"Scanned {t['images_scanned']} images in {time.time() - started:.0f}s: "
+            f"{t['images_with_class']} contain a {name} ({t['instances']} instances), {t['images_without_class']} do not"
+        )
+    index = indices[anchor]
     totals = summarize_index(index)
-    print(
-        f"Scanned {totals['images_scanned']} images in {time.time() - started:.0f}s: "
-        f"{totals['images_with_class']} contain a {class_name} "
-        f"({totals['instances']} instances), {totals['images_without_class']} do not"
-    )
     if totals["images_with_class"] < 3:
-        raise SystemExit(f"Only {totals['images_with_class']} images contain {class_name!r}; nothing to train on")
+        raise SystemExit(f"Only {totals['images_with_class']} images contain {anchor!r}; nothing to train on")
 
-    # Split BY IMAGE over the images that contain the class, same seed and
-    # ratios as every other run, so the numbers are comparable.
+    # Split BY IMAGE over the images that contain the anchor class, same seed
+    # and ratios as every other run, so the numbers are comparable. With one
+    # class an entry's ids are a flat list (unchanged); with several, one list
+    # per class, in --class-name order.
     positives = sorted(Path(p) for p, ids in index.items() if ids)
     splits = split_image_paths(positives, ratios=tuple(training["splits"]), seed=training["split_seed"])
-    entries = {name: [(p, index[str(p)]) for p in paths] for name, paths in splits.items()}
 
-    counts = {"class_name": class_name, "match": args.match, **totals, "splits": {}}
+    def ids_for(path: Path):
+        if len(class_names) == 1:
+            return index[str(path)]
+        return [indices[name][str(path)] for name in class_names]
+
+    entries = {name: [(p, ids_for(p)) for p in paths] for name, paths in splits.items()}
+
+    counts = {"class_name": class_name, "class_names": class_names, "match": args.match, **totals, "splits": {}}
+    if len(class_names) > 1:
+        # Kassem: "make sure the new object exists in these bed images".
+        counts["co_occurrence"] = {}
+        for name in class_names:
+            with_it = sum(1 for p in positives if indices[name][str(p)])
+            inst = sum(len(indices[name][str(p)]) for p in positives)
+            counts["co_occurrence"][name] = {"images": with_it, "instances": inst}
+            print(f"  of the {len(positives)} {anchor} images, {with_it} also contain a {name} ({inst} instances)")
     for name, items in entries.items():
+        per_class = [ClassSegmentationDataset.per_class_ids(ids) for _, ids in items]
         counts["splits"][name] = {
             "images": len(items),
-            "instances": sum(len(ids) for _, ids in items),
+            "instances": sum(len(c[0]) for c in per_class),
         }
-        print(f"  {name}: {len(items)} images, {counts['splits'][name]['instances']} instances")
+        if len(class_names) > 1:
+            counts["splits"][name]["per_class"] = {
+                cname: {
+                    "images": sum(1 for c in per_class if c[k]),
+                    "instances": sum(len(c[k]) for c in per_class),
+                }
+                for k, cname in enumerate(class_names)
+            }
+        detail = "  ".join(
+            f"{cname}: {counts['splits'][name]['per_class'][cname]['images']} img / "
+            f"{counts['splits'][name]['per_class'][cname]['instances']} inst"
+            for cname in class_names
+        ) if len(class_names) > 1 else f"{counts['splits'][name]['instances']} instances"
+        print(f"  {name}: {len(items)} images, {detail}")
 
     if args.negative_ratio > 0:
         negatives = sorted(Path(p) for p, ids in index.items() if not ids)
         rng = np.random.default_rng(training["split_seed"])
         take = min(len(negatives), int(round(args.negative_ratio * len(entries["train"]))))
         chosen = rng.choice(len(negatives), size=take, replace=False)
-        entries["train"] += [(negatives[i], []) for i in sorted(chosen)]
+        empty = [] if len(class_names) == 1 else [[] for _ in class_names]
+        entries["train"] += [(negatives[i], empty) for i in sorted(chosen)]
         counts["splits"]["train"]["negatives"] = take
-        print(f"  + {take} negative images (no {class_name}) added to train only")
+        print(f"  + {take} negative images (no {anchor}) added to train only")
 
     with open(counts_path, "w") as f:
         json.dump(counts, f, indent=2)
@@ -252,7 +326,9 @@ def main() -> None:
     val_loader = build_loader(entries["val"], image_size, batch_size, num_workers, shuffle=False, augment=False, seed=seed)
 
     model_config = dict(train_config["model"])
-    model_config.update({"arch": "resnet34_unet", "in_channels": 3, "num_masks": 1})
+    # One output channel per class. (For >1 the ResNetUNet also builds its
+    # small score head; it is unused here and simply receives no gradient.)
+    model_config.update({"arch": "resnet34_unet", "in_channels": 3, "num_masks": len(class_names)})
     model = build_model(model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = BCEDiceLoss()
@@ -303,6 +379,7 @@ def main() -> None:
                 "val_iou_pooled": val["iou_pooled"],
                 "lr": lr_now,
                 "seconds": elapsed,
+                **({"val_per_class": dict(zip(class_names, val["per_class"]))} if len(class_names) > 1 else {}),
             }
         )
         with open(history_path, "w") as f:
@@ -321,6 +398,7 @@ def main() -> None:
             "train_settings": {
                 "task": "class_segmentation",
                 "class_name": class_name,
+                "class_names": class_names,
                 "match": args.match,
                 "image_size": list(image_size),
                 "in_channels": 3,
@@ -334,7 +412,8 @@ def main() -> None:
             f"epoch {epoch:3d}/{epochs}  "
             f"train loss={train['loss']:.4f} IoU={train['iou']:.4f}  |  "
             f"val loss={val['loss']:.4f} IoU={val['iou']:.4f} pooled={val['iou_pooled']:.4f}"
-            f"  lr={lr_now:.2e}  ({elapsed:.0f}s){marker}"
+            + (f" [{per_class_text(val, class_names)}]" if len(class_names) > 1 else "")
+            + f"  lr={lr_now:.2e}  ({elapsed:.0f}s){marker}"
         )
         save_checkpoint(checkpoint_dir / "latest.pt", epoch, model, optimizer, train["loss"], state)
 
@@ -354,7 +433,12 @@ def main() -> None:
         f"TEST ({class_name}, {len(entries['test'])} images): "
         f"IoU={test['iou']:.4f} pooled={test['iou_pooled']:.4f} loss={test['loss']:.4f}"
     )
+    if len(class_names) > 1:
+        for cname, c in zip(class_names, test["per_class"]):
+            print(f"  TEST {cname}: IoU={c['iou']:.4f} pooled={c['iou_pooled']:.4f}")
     counts["test"] = {"iou": test["iou"], "iou_pooled": test["iou_pooled"], "best_epoch": best_epoch, "best_val_iou": best_val_iou}
+    if len(class_names) > 1:
+        counts["test"]["per_class"] = dict(zip(class_names, test["per_class"]))
     with open(counts_path, "w") as f:
         json.dump(counts, f, indent=2)
 

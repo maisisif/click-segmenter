@@ -1,19 +1,21 @@
-"""Qualitative figure for a one-class UNet (train_class.py): random test images
-with the input, the model's mask, the ground-truth mask and an overlay.
+"""Qualitative figure for a one- or multi-class UNet (train_class.py): random
+test images with the input, the model's masks, the ground-truth masks and an
+overlay.
 
 Kassem, 2026-09-08: "Take a random image from the testset, pass it through the
 model, plot the image, the output of the model, the ground truth and the
 segmentation overlay."
 
 The test split is rebuilt from the index that the training run cached in its
-output directory (index_<match>.json), NOT by rescanning the dataset. The
-export may have added images since the run started; rescanning would change
-the split and show images the model was trained on. If the cached index is
-missing, the script falls back to a rescan and says so.
+output directory (index_<match>.json, or index_<match>_<class>.json per class
+for a multi-class run), NOT by rescanning the dataset. The export may have added
+images since the run started; rescanning would change the split and show images
+the model was trained on. If the cached index is missing, the script falls back
+to a rescan and says so.
 
 Run from the repo root (CPU is fine, a handful of forward passes):
     python scripts/visualize_class.py --class-name bed
-    python scripts/visualize_class.py --class-name bed --num 8 --seed 1 --output figure.png
+    python scripts/visualize_class.py --class-name bed floor --num 8 --seed 1
 
 On the cluster, inside the container (see CLAUDE.md for the one-liner).
 """
@@ -42,50 +44,67 @@ from src.model.build import build_model  # noqa: E402
 from src.training.device import get_device  # noqa: E402
 
 EPS = 1e-6
+# One colour per output channel: red, blue, yellow, magenta, cyan, orange.
+COLORS = np.array(
+    [[1.0, 0.15, 0.15], [0.2, 0.4, 1.0], [1.0, 0.9, 0.1], [0.9, 0.2, 0.9], [0.1, 0.9, 0.9], [1.0, 0.55, 0.0]],
+    dtype=np.float32,
+)
 
 
 def mask_edge(mask: np.ndarray) -> np.ndarray:
-    """One-pixel-wide boundary of a boolean mask (4-neighbourhood, no scipy)."""
+    """Boundary of a boolean mask, two pixels wide so it survives downscaling."""
     padded = np.pad(mask, 1, mode="edge")
-    eroded = (
-        padded[1:-1, 1:-1]
-        & padded[:-2, 1:-1]
-        & padded[2:, 1:-1]
-        & padded[1:-1, :-2]
-        & padded[1:-1, 2:]
-    )
-    return mask & ~eroded
+    eroded = padded[1:-1, 1:-1] & padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
+    edge = mask & ~eroded
+    return edge | np.roll(edge, 1, 0) | np.roll(edge, 1, 1)
 
 
-def overlay(image: np.ndarray, pred: np.ndarray, truth: np.ndarray) -> np.ndarray:
-    """Image with the prediction tinted red and the ground-truth outline in green."""
+def paint(masks: np.ndarray) -> np.ndarray:
+    """(C, H, W) boolean masks -> RGB image, black background, one colour per class."""
+    out = np.zeros((*masks.shape[1:], 3), dtype=np.float32)
+    for k, mask in enumerate(masks):
+        out[mask] = COLORS[k % len(COLORS)]
+    return out
+
+
+def overlay(image: np.ndarray, preds: np.ndarray, truths: np.ndarray) -> np.ndarray:
+    """Image with each class's prediction tinted in its colour and the
+    ground-truth outline of that class drawn solid in the same colour."""
     out = image.astype(np.float32) / 255.0
-    red = np.array([1.0, 0.15, 0.15], dtype=np.float32)
-    out[pred] = 0.55 * out[pred] + 0.45 * red
-    edge = mask_edge(truth)
-    # Thicken the outline so it survives downscaling in a chat window.
-    edge = edge | np.roll(edge, 1, 0) | np.roll(edge, 1, 1)
-    out[edge] = np.array([0.1, 1.0, 0.1], dtype=np.float32)
+    for k, pred in enumerate(preds):
+        out[pred] = 0.55 * out[pred] + 0.45 * COLORS[k % len(COLORS)]
+    for k, truth in enumerate(truths):
+        out[mask_edge(truth)] = COLORS[k % len(COLORS)]
     return (out * 255).clip(0, 255).astype(np.uint8)
 
 
-def test_entries(output_dir: Path, class_name: str, match: str, root: Path | None, training: dict) -> list[tuple[Path, list[int]]]:
-    """Rebuild the exact test split of the training run."""
-    cache_path = output_dir / f"index_{match}.json"
-    if cache_path.exists():
-        with open(cache_path) as f:
-            cached = json.load(f)
-        index = cached["index"]
-        print(f"Using the training run's cached index ({len(index)} images) from {cache_path}")
-    else:
-        if root is None:
-            raise SystemExit(f"No cached index at {cache_path}; pass --data-root to rescan")
-        print(f"WARNING: no cached index at {cache_path}; rescanning {root} (split may differ from the run)")
-        index = build_class_index(discover_samples(root), class_name, match=match, cache_path=None)
+def load_indices(output_dir: Path, class_names: list[str], match: str, root: Path | None) -> dict[str, dict[str, list[int]]]:
+    indices = {}
+    for name in class_names:
+        cache_name = f"index_{match}.json" if len(class_names) == 1 else f"index_{match}_{name.replace(' ', '_')}.json"
+        cache_path = output_dir / cache_name
+        if cache_path.exists():
+            with open(cache_path) as f:
+                indices[name] = json.load(f)["index"]
+            print(f"Using the training run's cached {name} index ({len(indices[name])} images) from {cache_path}")
+        else:
+            if root is None:
+                raise SystemExit(f"No cached index at {cache_path}; pass --data-root to rescan")
+            print(f"WARNING: no cached index at {cache_path}; rescanning {root} (split may differ from the run)")
+            indices[name] = build_class_index(discover_samples(root), name, match=match, cache_path=None)
+    return indices
 
-    positives = sorted(Path(p) for p, ids in index.items() if ids)
+
+def test_entries(output_dir: Path, class_names: list[str], match: str, root: Path | None, training: dict) -> list[tuple[Path, list]]:
+    """Rebuild the exact test split of the training run (see train_class.py)."""
+    indices = load_indices(output_dir, class_names, match, root)
+    anchor = indices[class_names[0]]
+    positives = sorted(Path(p) for p, ids in anchor.items() if ids)
     splits = split_image_paths(positives, ratios=tuple(training["splits"]), seed=training["split_seed"])
-    entries = [(p, index[str(p)]) for p in splits["test"]]
+    if len(class_names) == 1:
+        entries = [(p, anchor[str(p)]) for p in splits["test"]]
+    else:
+        entries = [(p, [indices[n][str(p)] for n in class_names]) for p in splits["test"]]
 
     counts_path = output_dir / "counts.json"
     if counts_path.exists():
@@ -98,8 +117,8 @@ def test_entries(output_dir: Path, class_name: str, match: str, root: Path | Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--class-name", default="chair")
-    parser.add_argument("--output-dir", default=None, help="Training output dir, default outputs/class/<class-name>")
+    parser.add_argument("--class-name", nargs="+", default=["chair"], help="Same name(s), same order, as the training run")
+    parser.add_argument("--output-dir", default=None, help="Training output dir, default outputs/class/<names joined by _>")
     parser.add_argument("--checkpoint", default=None, help="Default <output-dir>/checkpoints/best.pt")
     parser.add_argument("--data-root", default=None, help="Only needed if the run's cached index is missing")
     parser.add_argument("--train-config", default="configs/train.yaml")
@@ -110,8 +129,10 @@ def main() -> None:
     parser.add_argument("--device", default=None, choices=["auto", "cuda", "mps", "cpu"])
     args = parser.parse_args()
 
-    class_name = args.class_name.strip().lower()
-    output_dir = Path(args.output_dir) if args.output_dir else Path("outputs") / "class" / class_name.replace(" ", "_")
+    class_names = [c.strip().lower() for c in args.class_name]
+    label = "+".join(class_names)
+    default_dir = Path("outputs") / "class" / "_".join(c.replace(" ", "_") for c in class_names)
+    output_dir = Path(args.output_dir) if args.output_dir else default_dir
     checkpoint_path = Path(args.checkpoint) if args.checkpoint else output_dir / "checkpoints" / "best.pt"
     figure_path = Path(args.output) if args.output else output_dir / f"qualitative_seed{args.seed}.png"
 
@@ -124,17 +145,18 @@ def main() -> None:
     settings = ckpt.get("train_settings", {})
     match = settings.get("match", "exact")
     image_size = tuple(settings.get("image_size", train_config["data"]["image_size"]))
-    if settings.get("class_name", class_name) != class_name:
-        print(f"WARNING: checkpoint was trained on {settings['class_name']!r}, not {class_name!r}")
+    trained_on = settings.get("class_names", [settings.get("class_name", class_names[0])])
+    if trained_on != class_names:
+        print(f"WARNING: checkpoint was trained on {trained_on}, you asked for {class_names}")
     print(f"Checkpoint {checkpoint_path}: epoch {ckpt.get('epoch')}, best val IoU {ckpt.get('best_val_iou', float('nan')):.4f}")
 
     model_config = dict(train_config["model"])
-    model_config.update({"arch": "resnet34_unet", "in_channels": 3, "num_masks": 1, "pretrained": False})
+    model_config.update({"arch": "resnet34_unet", "in_channels": 3, "num_masks": len(class_names), "pretrained": False})
     model = build_model(model_config).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
-    entries = test_entries(output_dir, class_name, match, Path(args.data_root) if args.data_root else None, training)
+    entries = test_entries(output_dir, class_names, match, Path(args.data_root) if args.data_root else None, training)
     if not entries:
         raise SystemExit("Test split is empty")
     rng = np.random.default_rng(args.seed)
@@ -144,34 +166,39 @@ def main() -> None:
 
     rows = len(picked)
     fig, axes = plt.subplots(rows, 4, figsize=(16, 3.2 * rows), squeeze=False)
-    titles = ["Image", "Model output", "Ground truth", "Overlay (red = prediction, green = GT outline)"]
-    ious = []
+    legend = ", ".join(f"{n} = {c}" for n, c in zip(class_names, ["red", "blue", "yellow", "magenta", "cyan", "orange"]))
+    titles = ["Image", "Model output", "Ground truth", "Overlay (filled = prediction, outline = GT)"]
+    all_ious: list[list[float]] = [[] for _ in class_names]
     with torch.no_grad():
         for row, ((image_path, ids), (image_t, mask_t)) in enumerate(zip(picked, dataset)):
             logits, _ = model(image_t.unsqueeze(0).to(device))
-            prob = torch.sigmoid(logits)[0, 0].cpu().numpy()
-            pred = prob > args.threshold
-            truth = mask_t[0].numpy() > 0.5
-            inter = np.logical_and(pred, truth).sum()
-            union = np.logical_or(pred, truth).sum()
-            iou = inter / max(union, EPS)
-            ious.append(iou)
+            preds = (torch.sigmoid(logits)[0].cpu().numpy() > args.threshold)  # (C, H, W)
+            truths = mask_t.numpy() > 0.5
+
+            parts = []
+            for k, name in enumerate(class_names):
+                if not truths[k].any():
+                    parts.append(f"{name}: absent")
+                    continue
+                inter = np.logical_and(preds[k], truths[k]).sum()
+                union = np.logical_or(preds[k], truths[k]).sum()
+                iou = inter / max(union, EPS)
+                all_ious[k].append(iou)
+                parts.append(f"{name} {iou:.3f}")
 
             image = (image_t.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-            panels = [image, pred, truth, overlay(image, pred, truth)]
+            panels = [image, paint(preds), paint(truths), overlay(image, preds, truths)]
             for col, (ax, panel) in enumerate(zip(axes[row], panels)):
-                ax.imshow(panel, cmap="gray" if panel.ndim == 2 else None, vmin=0, vmax=1 if panel.ndim == 2 else None)
+                ax.imshow(panel)
                 ax.set_xticks([])
                 ax.set_yticks([])
                 if row == 0:
                     ax.set_title(titles[col], fontsize=11)
-            axes[row][0].set_ylabel(f"{image_path.stem}\n{len(ids)} {class_name}(s)  IoU {iou:.3f}", fontsize=9)
-            print(f"{image_path.stem}: {len(ids)} instance(s), IoU {iou:.4f}")
+            axes[row][0].set_ylabel(f"{image_path.stem}\nIoU " + "  ".join(parts), fontsize=8)
+            print(f"{image_path.stem}: " + ", ".join(parts))
 
-    fig.suptitle(
-        f"{class_name}: {rows} random test images (seed {args.seed}), mean IoU on these {np.mean(ious):.3f}",
-        fontsize=13,
-    )
+    means = "  ".join(f"{n} {np.mean(v):.3f}" for n, v in zip(class_names, all_ious) if v)
+    fig.suptitle(f"{label}: {rows} random test images (seed {args.seed}). {legend}. Mean IoU on these: {means}", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
     figure_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(figure_path, dpi=110)
