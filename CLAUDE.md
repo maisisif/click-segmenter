@@ -113,6 +113,19 @@ tail -20 ~/projects/click-segmenter/outputs/train.log
 cat ~/projects/click-segmenter/outputs/class/chair/counts.json   # image/instance counts he asked for
 ```
 
+**Qualitative figure for a one-class run** (Kassem, 2026-09-08: random test
+images with image / model output / ground truth / overlay). Rebuilds the run's
+exact test split from its cached `index_exact.json`, so it stays valid after the
+export adds images. CPU, under a minute; run it on the frontend inside the
+container, then fetch the PNG via OnDemand -> Files.
+
+```bash
+cd ~/projects/click-segmenter && git pull && singularity exec --bind /storage/brno2/home/$USER   /cvmfs/singularity.metacentrum.cz/NGC/PyTorch:25.02-py3.SIF   python3 scripts/visualize_class.py --class-name bed --num 6 --seed 0
+ls -l outputs/class/bed/qualitative_seed0.png
+```
+
+`--seed 1` picks a different random set; `--class-name chair` does the chair run.
+
 The log prints the counts (images scanned, images with a chair, instances, per
 split) before the first epoch. `--match contains` also takes armchair, swivel
 chair etc.; `--negative-ratio 0.5` adds chair-free images to training only.
@@ -257,6 +270,7 @@ scripts/            app.py (launch locally), export_model.py (deployment
                     train.py (M3 overfit check), train_full.py (real training),
                     train_class.py (one-class semantic UNet, e.g. chair;
                       pairs with src/data/class_dataset.py),
+                    visualize_class.py (qualitative test figure for it),
                     train_simple.py (readable walkthrough version),
                     export_ade20k.py, analyze_dataset.py, metacentrum/*.pbs
 deploy/huggingface/ what gets uploaded to the Space: app.py, requirements.txt
