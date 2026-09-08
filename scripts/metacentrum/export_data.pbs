@@ -36,8 +36,17 @@ set -euo pipefail
 #
 # Note this re-exports the first 3000 images as well (streaming restarts at row
 # 0), which is wasted work but harmless -- it simply overwrites identical files.
-LIMIT_TRAIN=10000
-LIMIT_VAL=2000
+# All three can be overridden at submission time. To fetch the REST of the
+# train split (rows 10000..25573) without rewriting the first 10000, and skip
+# the validation split, which is already complete:
+#     qsub -v START_TRAIN=10000,LIMIT_TRAIN=,LIMIT_VAL=0 scripts/metacentrum/export_data.pbs
+# A training job that is already running is unaffected: it lists the dataset
+# once at start. Later runs see the bigger set, so delete
+# outputs/instance_index_*.json before the next click-model run (the chair
+# index rebuilds itself).
+LIMIT_TRAIN="${LIMIT_TRAIN-10000}"
+LIMIT_VAL="${LIMIT_VAL-2000}"
+START_TRAIN="${START_TRAIN:-0}"
 
 # $HOME is NOT stable across MetaCentrum nodes -- you have a home directory on
 # several storages, and which one $HOME points at depends on where the job
@@ -76,9 +85,9 @@ cd '$REPO'
 echo '--- installing export deps (datasets, pyarrow) ---'
 pip install --user --quiet datasets pyarrow
 
-echo '--- exporting train split (limit: ${LIMIT_TRAIN:-all}) ---'
+echo '--- exporting train split (start: $START_TRAIN, limit: ${LIMIT_TRAIN:-all}) ---'
 python3 scripts/export_ade20k.py --split train --output-root '$OUTPUT_ROOT' \
-    ${LIMIT_TRAIN:+--limit $LIMIT_TRAIN}
+    --start $START_TRAIN ${LIMIT_TRAIN:+--limit $LIMIT_TRAIN}
 
 echo '--- exporting validation split (limit: ${LIMIT_VAL:-all}) ---'
 python3 scripts/export_ade20k.py --split validation --output-root '$OUTPUT_ROOT' \
