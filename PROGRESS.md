@@ -3,7 +3,9 @@
 Living state of the project. `CLAUDE.md` holds the fixed plan; this file tracks
 where things actually stand. Read both at the start of a session.
 
-Last updated: 2026-08-07
+Last updated: 2026-09-08 (see "One-class semantic experiments" and "Next
+steps" at the end; the sections in between are the historical record and
+CLAUDE.md holds the current summary)
 
 ## Project summary
 
@@ -135,8 +137,10 @@ click encoding or ambiguity.
 
 ## Blocked on
 
-Nothing. Both earlier blockers are resolved: GPU jobs work via
-`gpu_cap=compute_75` in a batch job, and 3,600 images are exported to brno2.
+Nothing on the cluster side. GPU jobs work via `gpu_cap=compute_75` in a batch
+job, and as of 2026-09-08 the **whole** ADE20K mirror is exported to brno2
+(25,574 train + 2,000 val = 27,574 images; earlier runs used at most 12,003).
+Still blocked on humans: `hf auth login` for the Space, and Kassem's GitLab URL.
 
 ## Lessons that cost time (worth not repeating)
 
@@ -227,23 +231,65 @@ Verified end to end: a real ResNet-34 export predicts a 1536x2048 photo through
 the Space entry point, from the staged Space layout, with the project not
 importable and no configs present.
 
-## Next steps
+## Click-model state at the freeze (2026-09-05)
 
-1. **Deploy.** Export the run-6 checkpoint, push weights and Space, send Kassem
-   the URL (target Fri 2026-08-28). Warn him about the free-tier cold start.
-2. **GitLab migration**, excluding `.claude/`, `CLAUDE.md` and
-   `segmentation-project-prompt.md`.
-3. **Previous-mask input + iterative click training.** This is the product
-   defect, not just a metric: extra clicks barely help because the model never
-   sees what it just predicted.
-4. **M5 metrics**: NoC@85 and NoC@90, the field's standard measure and the
-   honest way to describe an interactive tool. Frame results to Kassem as NoC,
-   not as single-click IoU.
-5. One multi-head attention run, if time allows. Model freeze Sat 2026-09-05.
+Run 7 (ResNet-34 UNet, 3 candidate masks + score head, 12k images) is the best
+click model: test IoU 0.6194 single click, best-of-3 oracle 0.7068. Run 8 (slot
+model, `train_slots.py`) reached val 0.4294 before walltime and was not
+resumed. Built but never run on the cluster: multi-click evaluation
+(`scripts/evaluate.py`, mIoU@k and NoC) and iterative fine-tuning with a
+previous-mask channel (`--prev-mask --iterative-clicks` in `train_full.py`).
+Both verified end to end on a synthetic dataset on the laptop. Full detail in
+`docs/TECHNICAL-RECORD.md`.
 
-Cut deliberately: target-centered crops, a bigger backbone, augmentation.
+## One-class semantic experiments (2026-09-08, Kassem's request)
 
-Do not spend more effort on dataset size. That was tested and rejected.
+On 2026-09-08 Kassem set the click numbers aside ("different benchmark") and
+asked for something simpler to look at: a UNet that takes RGB and outputs ONE
+mask per image, the union of all instances of one class, scored by IoU on that
+class only, background never counted. Then a class that scores high in the
+ADE20K paper, then a qualitative figure, then two classes as a 2-channel
+tensor. Everything is in `scripts/train_class.py`, `src/data/class_dataset.py`
+and `scripts/visualize_class.py`; outputs under `outputs/class/<name>/`.
+
+| Class | Images with class (train/val/test) | Best val (epoch) | Test IoU per image | Test pooled | Paper Fig. 9 |
+|---|---|---|---|---|---|
+| chair (job 23551219) | 2,745 of 12,003 (1,921/549/275) | 0.4659 (52), stop 72 | **0.4111** | 0.4847 | 0.42 |
+| bed | 2,193 of ~13.6k (1,535/439/219) | 0.7590 (43), stop 63 | **0.7353** | 0.7592 | 0.76 |
+| bed + floor (job 23553118) | full 27,574 set, counts in train.log | running 2026-09-08 evening | | | floor 0.75 |
+
+Findings:
+
+- **The model reproduces the paper's per-class numbers** (chair 0.41 vs 0.42,
+  bed 0.76 vs 0.76 pooled). The class decides the ceiling, not our UNet. A
+  class above 0.8 in the paper (sky .93, pool table .85, building/road .80)
+  would clear 0.8 here too. Reported to Kassem with the bed result.
+- Chair overfits (train 0.82 / test 0.41); bed has no such gap. The forecast of
+  0.55-0.65 for chair, made before reading the paper's bar chart, was wrong by
+  0.15. Forecast from the paper from now on.
+- Each run is about an hour of GPU (20-40 s/epoch, early stop around epoch
+  60-80) plus queue. The bed figure (`visualize_class.py`) got "Perfect" from
+  him and led directly to the two-class request.
+- Kassem's stated plan after two classes: 10-20 classes, never all (memory).
+
+## Next steps (2026-09-08 evening, deadline 2026-09-10)
+
+1. **Finish the bed+floor thread.** When job 23553118 is gone from `qstat`:
+   `grep -E "also contain|TEST|Best val" outputs/train.log`, run
+   `visualize_class.py --class-name bed floor`, send Kassem the counts, the
+   per-class test IoU and the PNG. Fill the table above.
+2. **Ask Kassem how this thread feeds the graded deliverable** (on 2026-08-12
+   he said the grade is on the system). Decide with him whether the final
+   submission is the deployed click tool with the one-class runs as an
+   experiment chapter, or something else. Two days left; this decides where
+   they go.
+3. **Deploy the Space** with run 7 (export, `hf auth login`, push), still the
+   largest undone deliverable, unless item 2 changes the target.
+4. **Update README and the notebook** with run 7 and the one-class table.
+5. GitLab migration when he sends the URL.
+
+Cut: target-centered crops, a bigger backbone, augmentation, attention,
+resuming run 8.
 
 ## Environment notes
 

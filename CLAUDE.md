@@ -227,6 +227,12 @@ requests: website with pages (home, how to navigate) and deploy instructions a
 random user can follow; multi-head attention layers; migrate the repo to a
 GitLab he created, with no `.claude` or AI folders in it.
 
+On 2026-09-08 he dismissed the RITM/ScribbleSeg click-count evidence
+("different benchmark") and redirected to one-class semantic segmentation
+(chair -> bed -> bed+floor, see the one-class table). He wants counts of
+class images reported, per-class IoU, and qualitative figures; he does not
+want background scored.
+
 Asked on 2026-08-12 whether the grade is on the model or the system, he answered
 the system. **So a working, documented, deployed tool outranks another point of
 IoU**, and the plan is ordered that way. Report results to him as NoC@85 /
@@ -310,7 +316,15 @@ Face mirror `1aurent/ADE20K`. COCO and PSG were ruled out by Kassem.
 On the cluster at
 `/storage/brno2/home/mais999/projects/ade20k-reference/dataset/ADE20K_2021_17_01/images/ADE`.
 
-Measured with `scripts/analyze_dataset.py` over all 12,003 images:
+**The export is complete since the evening of 2026-09-08**: 25,574 training +
+2,000 validation images = 27,574, the whole HF mirror. Every run before that
+(runs 1-8, chair, bed) used at most the first 12,003. The bed+floor run (job
+23553118) is the first on the full set, so its counts and IoU are not
+comparable to the bed run's. Before the next *click-model* run, delete
+`outputs/instance_index_*.json` or the stale index hides the new images.
+
+Measured with `scripts/analyze_dataset.py` over the earlier 12,003 images
+(not re-run on 27k yet):
 
 - 12,003 images (10,000 train split + 2,000 val split + 3 samples)
 - **240,671 objects**, **2,041 distinct classes**
@@ -387,6 +401,33 @@ Established by direct experiment:
   0.0449, against the +0.045 that 3k -> 12k was independently measured to give.
   The test-split size in the log identifies the run -- 300 images means 3k,
   1200 means 12k.
+
+### One-class semantic runs (Kassem's 2026-09-08 thread)
+
+Not the click model. RGB in, one mask per image = union of all instances of one
+class, IoU on that class only (background never scored), per image, averaged.
+Same ResNet-34 UNet, 3 input channels, BCE+Dice, split by image over the
+images containing the class. Test numbers are on the class images only.
+
+| Class | Images with class (train/val/test) | Best val (epoch) | Test IoU per image | Test pooled | Paper Fig. 9 |
+|---|---|---|---|---|---|
+| chair (job 23551219) | 2,745 of 12,003 (1,921/549/275) | 0.4659 (52), stop 72 | **0.4111** | 0.4847 | 0.42 |
+| bed (2026-09-08 pm) | 2,193 of ~13.6k (1,535/439/219) | 0.7590 (43), stop 63 | **0.7353** | 0.7592 | 0.76 |
+| bed + floor (job 23553118) | full 27,574 set; counts in train.log | running 2026-09-08 21:xx | | | floor 0.75 |
+
+What it established:
+
+- **Our one-class UNet reproduces the paper's per-class IoU** (arXiv 1608.05442
+  Fig. 9, DilatedResNet-50): chair 0.41 vs 0.42, bed 0.76 vs 0.76 (pooled). So
+  the class, not the model, sets the ceiling. To clear 0.8 pick a class the
+  paper puts above it: sky .93, pool table .85, building/road .80.
+- Chair overfits hard (train IoU 0.82 vs test 0.41 on 1,921 train images);
+  bed does not have that gap.
+- My 0.55-0.65 forecast for chair was wrong by 0.15; forecast from the paper's
+  per-class bar chart instead.
+- Qualitative figures: `scripts/visualize_class.py` (image / output / GT /
+  overlay, exact test split rebuilt from the run's cached index). Bed figure
+  sent to Kassem 2026-09-08; his reaction: "Perfect", then the two-class ask.
 
 ## Design decisions and why
 
@@ -467,8 +508,23 @@ hypotheses stay recorded in PROGRESS.md rather than being deleted.
 
 ## Outstanding
 
-State as of **2026-09-03**, one week before the 09-10 deadline. Training is
-finished; everything left is delivery.
+State as of **2026-09-08 evening**, two days before the 09-10 deadline.
+
+**Kassem's live thread (Discord, 2026-09-08).** He set aside the click model's
+numbers and asked for plain one-class semantic segmentation: chair first, then
+a class that scores high in the paper (bed), a qualitative figure (sent, he
+said "Perfect"), and now two classes as a 2-channel mask tensor with a class
+that co-occurs with beds (bed+floor, job 23553118, running). His stated plan
+after that: 10-20 classes, never all. Each step so far has been what he asked
+for, verbatim, and each arrives in about an hour of GPU time. **Still open with
+him: how this thread relates to the graded deliverable** (on 2026-08-12 he said
+the grade is on the system, not the model). Ask, do not assume.
+
+When the bed+floor job finishes: `grep -E "also contain|TEST|Best val"
+outputs/train.log`, then the figure with `--class-name bed floor`, then send
+him counts + per-class test IoU + the PNG, and fill the table above.
+
+The delivery items below are unchanged and still undone.
 
 1. **DEPLOY THE SPACE. Nothing is published yet** -- this is the single largest
    outstanding deliverable and it was due 08-28. All of it is built and
