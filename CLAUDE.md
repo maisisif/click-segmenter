@@ -4,7 +4,7 @@ Read this file plus PROGRESS.md at the start of every session. This file holds
 the stable facts: what the project is, what has been built and measured, how to
 operate the infrastructure, and what remains.
 
-Last updated: 2026-09-03.
+Last updated: 2026-09-08.
 
 ---
 
@@ -101,6 +101,24 @@ qsub -v EXTRA_ARGS="--init-from results/run-7/best.pt --prev-mask --iterative-cl
 Resubmitting the same line after a walltime kill resumes it (`--auto-resume`
 looks in `--checkpoint-dir`). The log reports `IoU@3` (selection metric) and
 `IoU@1` side by side; expect IoU@1 to stay near 0.62 and IoU@3 to climb.
+
+**Train the one-class chair UNet** (Kassem, 2026-09-08: RGB in, one mask per
+image = union of all chairs, chair-only IoU, no clicks). Writes everything under
+`outputs/class/chair/`, so it cannot touch a click-model run. Resubmitting the
+same line after a walltime kill resumes it.
+
+```bash
+qsub -v TRAIN_SCRIPT=scripts/train_class.py,EXTRA_ARGS="--class-name chair"      scripts/metacentrum/train.pbs
+tail -20 ~/projects/click-segmenter/outputs/train.log
+cat ~/projects/click-segmenter/outputs/class/chair/counts.json   # image/instance counts he asked for
+```
+
+The log prints the counts (images scanned, images with a chair, instances, per
+split) before the first epoch. `--match contains` also takes armchair, swivel
+chair etc.; `--negative-ratio 0.5` adds chair-free images to training only.
+Report `IoU` (per-image mean over chair images) as the headline; `pooled` is
+the pixel-summed variant. One epoch is roughly 3k images, so the whole run
+fits one job.
 
 **Git hygiene on the cluster.** Running the notebook or editing configs dirties
 the checkout and blocks `git pull`. The cluster clone is read-only in spirit;
@@ -237,6 +255,8 @@ src/app/            ui.py (Blocks layout and event wiring), pages.py (Home and
 scripts/            app.py (launch locally), export_model.py (deployment
                     checkpoint), deploy_space.py (push app + weights),
                     train.py (M3 overfit check), train_full.py (real training),
+                    train_class.py (one-class semantic UNet, e.g. chair;
+                      pairs with src/data/class_dataset.py),
                     train_simple.py (readable walkthrough version),
                     export_ade20k.py, analyze_dataset.py, metacentrum/*.pbs
 deploy/huggingface/ what gets uploaded to the Space: app.py, requirements.txt
