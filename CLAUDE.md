@@ -239,8 +239,12 @@ IoU**, and the plan is ordered that way. Report results to him as NoC@85 /
 NoC@90 rather than as single-click IoU -- NoC is what an interactive tool is
 actually judged on, and 0.85 single-click was never the target.
 
-Calendar. Real deadline **2026-09-10**; 2026-09-15 is the Computer Vision exam,
-not a project defense, and 09-11 to 09-15 is exam study.
+Calendar, as of 2026-09-09. The 09-10 date was Mais's own target, not
+Kassem's; his delivery plan (see Outstanding) now sets the order of work.
+**Fri 2026-09-11: the Paylocity work laptop and all work accounts are handed
+back** (see "Machines and handover" below). 2026-09-15 is the Computer Vision
+exam, then travel. Mais wants Kassem's steps 1-4 done by about 09-11 and the
+rest after the exam. The original weekly plan, kept for the record:
 
 - Week 1 (08-22 to 08-28): GitLab migration, export + inference wrapper, the
   three pages, deploy to Spaces. Send Kassem the URL by Fri 08-28.
@@ -249,6 +253,76 @@ not a project defense, and 09-11 to 09-15 is exam study.
 - Week 3 (09-05 to 09-10): **model freeze Sat 09-05**, final checkpoint swapped
   in Sunday, deploy instructions tested on a clean machine. Done 09-10.
 - Cut deliberately: target-centered crops, a bigger backbone, augmentation.
+
+## Machines and handover (written 2026-09-09)
+
+Three machines have touched this project; only two survive past 2026-09-11.
+
+- **Mac** (`~/projects/click-segmenter`, Apple MPS): the long-term dev machine.
+  The Laptop commands above are written for it. After the handover it is the
+  only local machine, so pull main there and re-run `tests/test_app_wiring.py`
+  and `tests/test_interaction.py` before relying on it.
+- **MetaCentrum**: unaffected by the handover. Data, checkpoints, `results/`
+  and `outputs/` live there under `/storage/brno2/.../click-segmenter`. Run 7's
+  `best.pt` is in its archived `results/run-*/` directory, not in
+  `outputs/checkpoints/` (that held run 8, the unfinished slot model, after
+  2026-09-04). One-class runs are under `outputs/class/<names>/`.
+- **Paylocity Windows laptop** (2026-09-05 to 09-11 only): Python via `uv`
+  (CPython 3.12, CPU torch) in `.venv`, run as `.\.venv\Scripts\python.exe`;
+  no dataset or checkpoints; the git clone has a local
+  `credential.https://github.com.useHttpPath true` plus the gmail author so
+  pushes never touched the work account. Before returning it: remove the
+  personal GitHub credential from Windows Credential Manager and delete the
+  clone. One commit (5f1815e, 2026-09-05) was authored with the work email by
+  mistake; the GitLab rewrite maps it to gmail.
+
+The Claude Code sessions up to 2026-09-09 ran on the work account, and that
+assistant's private memory notes disappear with it. **This file is the only
+carrier of project context** from then on: anything a future session must
+know goes here or in PROGRESS.md, not in an assistant's memory.
+
+Kassem's 0.8 IoU target, for the record: he called it "completely possible";
+the assessment here (2026-09-05) is that 0.8 single-click over all ADE20K
+instances is not reachable (published models need ~7.7 clicks for 85% on
+ADE20K), while 0.8 as mIoU after 3-5 clicks, or as a one-class IoU on a class
+the paper puts above 0.8 (sky, pool table, building, road), is.
+
+## Publishing to GitLab (method agreed 2026-09-09)
+
+Kassem is strict: the GitLab repo must contain no `CLAUDE.md`, `.claude/`,
+prompt files or other assistant traces, in the tip **or in history**. Mais
+wants to keep those files for the assistant. The agreed arrangement:
+
+- **This GitHub repo stays the working repo** and keeps `CLAUDE.md`,
+  `PROGRESS.md`, `.claude/`. All work and all polish happen here.
+- **GitLab is a derived copy, never edited by hand.** A publish script makes a
+  fresh clone of this repo, runs `git filter-repo` with fixed rules, and pushes
+  to GitLab. Rules: drop `.claude/`, `CLAUDE.md`,
+  `segmentation-project-prompt.md` (and, recommended, `PROGRESS.md`); strip
+  every `Co-Authored-By: Claude ...` trailer; rewrite `CLAUDE.md` references in
+  file contents and commit messages to `docs/TECHNICAL-RECORD.md`; map
+  `misifzada@paylocity.com` (and the GitHub noreply address) to
+  `isifzadm@gmail.com`.
+- **Re-running is safe because the rewrite is deterministic.** Tested
+  2026-09-09 on two independent clones: identical head `753bbe0`, 55 of 59
+  commits kept (the 4 dropped touched only the excluded files). New commits in
+  GitHub therefore become a fast-forward on GitLab; the script must refuse to
+  force-push, because a non-fast-forward means someone committed on GitLab
+  directly.
+- `git filter-repo` is not installed as a git subcommand here; run it as
+  `uvx git-filter-repo` (Windows: `~/tools/bin/uvx.exe`), or `pip install
+  git-filter-repo` on the Mac.
+- Take a `git bundle` of this repo before the first publish.
+- Kassem's steps (website without weights, bed model + results + plot, bed+floor
+  model, website tab, more classes) are made as **separate commits here** and
+  published in that order so they show as separate commits on GitLab.
+- Weights never enter either git history. Ship them via a Hugging Face model
+  repo, a GitLab release/LFS if his instance allows it, or an fp16 export;
+  decide once the GitLab instance and its limits are known.
+- Commits made by the assistant in this repo carry no `Co-Authored-By` trailer
+  from 2026-09-09 on; the filter removes older ones.
+
+Status: Mais has the GitLab URL as of 2026-09-09; first publish not yet done.
 
 ## How the model works (for explaining it)
 
@@ -413,7 +487,7 @@ images containing the class. Test numbers are on the class images only.
 |---|---|---|---|---|---|
 | chair (job 23551219) | 2,745 of 12,003 (1,921/549/275) | 0.4659 (52), stop 72 | **0.4111** | 0.4847 | 0.42 |
 | bed (2026-09-08 pm) | 2,193 of ~13.6k (1,535/439/219) | 0.7590 (43), stop 63 | **0.7353** | 0.7592 | 0.76 |
-| bed + floor (job 23553118) | full 27,574 set; counts in train.log | running 2026-09-08 21:xx | | | floor 0.75 |
+| bed + floor (job 23553118) | full 27,574 set; 223 test images (counts in train.log) | 0.7808 (43), stop 63 | **0.7491** (bed 0.7199, floor 0.7784) | 0.7732 (bed 0.7354, floor 0.8110) | bed .76, floor .75 |
 
 What it established:
 
@@ -508,23 +582,59 @@ hypotheses stay recorded in PROGRESS.md rather than being deleted.
 
 ## Outstanding
 
-State as of **2026-09-08 evening**, two days before the 09-10 deadline.
+State as of **2026-09-09 morning**. Mais's own target: steps 1-4 below done by
+~2026-09-11 (exam 2026-09-15, then travel). The 09-10 date was Mais's, not
+Kassem's.
 
-**Kassem's live thread (Discord, 2026-09-08).** He set aside the click model's
-numbers and asked for plain one-class semantic segmentation: chair first, then
-a class that scores high in the paper (bed), a qualitative figure (sent, he
-said "Perfect"), and now two classes as a 2-channel mask tensor with a class
-that co-occurs with beds (bed+floor, job 23553118, running). His stated plan
-after that: 10-20 classes, never all. Each step so far has been what he asked
-for, verbatim, and each arrives in about an hour of GPU time. **Still open with
-him: how this thread relates to the graded deliverable** (on 2026-08-12 he said
-the grade is on the system, not the model). Ask, do not assume.
+**Kassem's thread (Discord, 2026-09-08 evening to 00:29).** One-class chair,
+bed, then bed+floor (2-channel) each landed the paper's per-class IoU; he said
+"perfect" to the bed+floor numbers. The open question about the graded
+deliverable is answered: **the GitLab repo with visible, separate commits is
+the submission**, the click tool is the website those commits start from, and
+the multi-class UNet is what gets added to it. The deployed HF Space is no
+longer the priority.
 
-When the bed+floor job finishes: `grep -E "also contain|TEST|Best val"
-outputs/train.log`, then the figure with `--class-name bed floor`, then send
-him counts + per-class test IoU + the PNG, and fill the table above.
+His plan, in his order (each a separate commit in GitLab, "no claude files"):
 
-The delivery items below are unchanged and still undone.
+1. Push the website to GitLab **without** model weights.
+2. Separate commit: the one-class bed model + results + plot.
+3. Later commit: the 2-class bed+floor model.
+4. Integrate the 2-class (then N-class) model into the website as a new tab:
+   upload image -> masks. His words at 00:29: "add the clicks where each click
+   is a segmentation request", i.e. a click on the image asks the model which
+   of its classes is under the click and returns that class's mask.
+5. More classes for the final submission.
+
+His to-dos written at 00:28-00:29, verbatim order:
+
+- "now visualise the samples" -> `visualize_class.py --class-name bed floor`
+  on the frontend, send the PNG.
+- "do the same as this for both objects" (the figure shows both channels).
+- "if it's fine, try to add as many objects as possible (pick up all the
+  objects that achieved above 70 accuracy in the paper), probably like 10 at
+  least, not more than 20, you decide". Paper = arXiv 1608.05442 Fig. 9,
+  DilatedResNet-50 per-class IoU. Read so far from the chart: sky .93, pool
+  table .85, building .80, road .80, tent .78, bus .77, car .76, bed .76,
+  floor .75, person .70. Re-read the chart for the rest before fixing the list.
+- "then retrain again, visualise the results and get back to me".
+- "if all good then put the model in your website and add the clicks where
+  each click is a segmentation request".
+
+**Design point for the N-class run.** `train_class.py` accepts any number of
+names, but the FIRST name selects the images (bed -> bedroom images only).
+With sky / road / bus / car in the list, a bed anchor gives those channels
+almost no positives. Before the 10-20 class run, add an image-selection mode
+that takes every image containing ANY listed class (or all 27k images), keep
+per-class IoU scored only on images that contain the class, and expect a
+longer epoch (10x the images). One run, then the figure, then Kassem.
+
+**Blocker unchanged:** Kassem has not sent the GitLab URL. Migration plan
+(`git-filter-repo` dropping `.claude/`, `CLAUDE.md`,
+`segmentation-project-prompt.md`; 11 commits touched, 2 doc-only commits
+dropped) is checked and can be run into a fresh clone the moment it arrives.
+Weights go to a HF model repo or a release, never git.
+
+Older delivery items, kept for the record (the Space is now optional):
 
 1. **DEPLOY THE SPACE. Nothing is published yet** -- this is the single largest
    outstanding deliverable and it was due 08-28. All of it is built and

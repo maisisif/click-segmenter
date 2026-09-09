@@ -256,7 +256,7 @@ and `scripts/visualize_class.py`; outputs under `outputs/class/<name>/`.
 |---|---|---|---|---|---|
 | chair (job 23551219) | 2,745 of 12,003 (1,921/549/275) | 0.4659 (52), stop 72 | **0.4111** | 0.4847 | 0.42 |
 | bed | 2,193 of ~13.6k (1,535/439/219) | 0.7590 (43), stop 63 | **0.7353** | 0.7592 | 0.76 |
-| bed + floor (job 23553118) | full 27,574 set, counts in train.log | running 2026-09-08 evening | | | floor 0.75 |
+| bed + floor (job 23553118) | full 27,574 set; 223 test images (counts in train.log) | 0.7808 (43), stop 63 | **0.7491** (bed 0.7199, floor 0.7784) | 0.7732 (bed 0.7354, floor 0.8110) | bed .76, floor .75 |
 
 Findings:
 
@@ -272,24 +272,38 @@ Findings:
   him and led directly to the two-class request.
 - Kassem's stated plan after two classes: 10-20 classes, never all (memory).
 
-## Next steps (2026-09-08 evening, deadline 2026-09-10)
+## Next steps (2026-09-09, from Kassem's Discord messages of 2026-09-08 21:54 and 00:29)
 
-1. **Finish the bed+floor thread.** When job 23553118 is gone from `qstat`:
-   `grep -E "also contain|TEST|Best val" outputs/train.log`, run
-   `visualize_class.py --class-name bed floor`, send Kassem the counts, the
-   per-class test IoU and the PNG. Fill the table above.
-2. **Ask Kassem how this thread feeds the graded deliverable** (on 2026-08-12
-   he said the grade is on the system). Decide with him whether the final
-   submission is the deployed click tool with the one-class runs as an
-   experiment chapter, or something else. Two days left; this decides where
-   they go.
-3. **Deploy the Space** with run 7 (export, `hf auth login`, push), still the
-   largest undone deliverable, unless item 2 changes the target.
-4. **Update README and the notebook** with run 7 and the one-class table.
-5. GitLab migration when he sends the URL.
+Bed+floor result (job 23553118, finished before 00:27 on 2026-09-09): best val
+0.7808 at epoch 43, early stop 63, test 223 images, IoU 0.7491 per image
+(bed 0.7199, floor 0.7784), pooled 0.7732 (bed 0.7354, floor 0.8110). Sent to
+Kassem; "perfect". Floor comes in above the paper's .75, bed a little under
+its single-class run (0.7353), on a different, larger image set.
 
-Cut: target-centered crops, a bigger backbone, augmentation, attention,
-resuming run 8.
+Kassem answered the "what is the submission" question: the GitLab repo with
+separate visible commits. His order:
+
+1. Push the website to GitLab without model weights (blocked on his URL).
+2. Separate commit: one-class bed model + results + plot.
+3. Later commit: 2-class bed+floor model.
+4. Integrate the N-class model in the website as a new tab; "add the clicks
+   where each click is a segmentation request".
+5. More classes for the final submission.
+
+His to-dos of 00:28-00:29, in order: visualise the bed+floor samples (both
+channels); if fine, pick every class above 0.70 in the paper's Fig. 9, 10 to
+20 of them, "you decide"; retrain, visualise, report back; if good, put the
+model in the website with click-to-segment.
+
+Before the N-class run: `train_class.py` selects images by the first class
+name, so a bed anchor starves sky / road / car channels. Add an "any listed
+class" (or all-images) selection mode first, and re-read Fig. 9 for the full
+above-0.70 list (known so far: sky .93, pool table .85, building .80, road
+.80, tent .78, bus .77, car .76, bed .76, floor .75, person .70).
+
+Deprioritised, not cut: HF Space deployment, README/notebook update with run 7
+(do the README as part of the GitLab push). Cut: target-centered crops, a
+bigger backbone, augmentation, attention, resuming run 8.
 
 ## Environment notes
 
