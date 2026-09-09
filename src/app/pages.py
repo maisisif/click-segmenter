@@ -30,7 +30,7 @@ little, add another **Object** click.
 
 ### How it works, briefly
 
-The model is a U-Net with an ImageNet-pretrained ResNet-34 encoder, trained by us
+The model is a U-Net with an ImageNet-pretrained ResNet-34 encoder, trained for this project
 on [ADE20K](https://groups.csail.mit.edu/vision/datasets/ADE20K/). It is not SAM
 and does not use any off-the-shelf interactive segmenter.
 

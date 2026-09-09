@@ -11,7 +11,7 @@ three candidate masks with a predicted quality score for each, so that an
 ambiguous click (a person's shirt could mean shirt, torso, or whole person)
 does not have to be averaged into one blurry answer.
 
-Trained by us on ADE20K. The encoder starts from ImageNet weights, but no
+Trained for this project on ADE20K. The encoder starts from ImageNet weights, but no
 pretrained SAM or other off-the-shelf interactive segmenter is used at any
 point, so the architecture stays open to modification.
 
