@@ -322,7 +322,30 @@ wants to keep those files for the assistant. The agreed arrangement:
 - Commits made by the assistant in this repo carry no `Co-Authored-By` trailer
   from 2026-09-09 on; the filter removes older ones.
 
-Status: Mais has the GitLab URL as of 2026-09-09; first publish not yet done.
+The script exists: `scripts/publish_gitlab.sh <gitlab-url> [--dry-run]`
+(commit of 2026-09-11). It excludes itself from the published tree, refuses to
+run on a dirty working tree, checks the rewritten history for any leftover
+mention before pushing, and pushes without force. Tested 2026-09-11 against a
+local bare repo: 55 of 63 commits published (the 8 dropped touched only
+excluded files), an idle re-run reports "Everything up-to-date", and a re-run
+after one new commit pushes a plain fast-forward.
+
+Status 2026-09-11: Mais has GitLab access; the first publish is to be done
+**from the Mac** (the work laptop is returned today). Mac steps:
+
+```bash
+cd ~/projects/click-segmenter && git pull origin main
+brew install git-filter-repo            # or: pip install git-filter-repo
+git bundle create ../click-segmenter-$(date +%F).bundle --all   # backup first
+scripts/publish_gitlab.sh <gitlab-url> --dry-run                # inspect the log
+scripts/publish_gitlab.sh <gitlab-url>                          # push
+```
+
+Then tell Kassem, and make his steps 2-5 as separate commits here, re-running
+the script after each. Open decision folded into the script: PROGRESS.md is
+excluded too; author normalised to "Mais Isifzada <isifzadm@gmail.com>". Edit
+the constants at the top of the script before the first publish if either is
+wrong, never after (it would rewrite every commit id).
 
 ## How the model works (for explaining it)
 
