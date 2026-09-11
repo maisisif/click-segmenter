@@ -605,9 +605,56 @@ hypotheses stay recorded in PROGRESS.md rather than being deleted.
 
 ## Outstanding
 
-State as of **2026-09-09 morning**. Mais's own target: steps 1-4 below done by
-~2026-09-11 (exam 2026-09-15, then travel). The 09-10 date was Mais's, not
-Kassem's.
+State as of **2026-09-11, end of the last session on the work laptop**.
+Everything below is on GitHub main. Nothing is on GitLab yet.
+
+**Where Kassem's steps stand (his numbering):**
+
+| Step | State | Commit(s) |
+|---|---|---|
+| 1 website to GitLab without weights | script ready, **run from the Mac** (see Publishing) | -- |
+| 2 one-class bed model | code done; **results + weights commit pending, needs cluster files** | 5b6190f (inference/export) |
+| 3 two-class bed+floor model | same as 2 | -- |
+| 4 integrate into the website | **done**: Classes tab, `--class-checkpoint`, wiring test | af86798 |
+| 5 more classes | `--select any` done + class list chosen; **training not started** | a339e00 |
+
+README documents the class models (2c04c13) and already points at
+`results/class/<run>/` and `weights/class-*.pt`, which do not exist yet.
+
+**Mac procedure for the two model commits (steps 2 and 3).** On the cluster
+frontend first, if `outputs/class/bed_floor/qualitative_seed0.png` is missing:
+`python scripts/visualize_class.py --class-name bed floor`. Then on the Mac:
+
+```bash
+cd ~/projects/click-segmenter && git pull origin main
+# copy from MetaCentrum (OnDemand Files or scp), keeping the folder names:
+#   outputs/class/bed/{counts.json,history.json,qualitative_seed0.png,checkpoints/best.pt}
+#   outputs/class/bed_floor/{counts.json,history.json,qualitative_seed0.png,checkpoints/best.pt}
+# into ~/Downloads/cluster/
+for run in bed bed_floor; do
+  mkdir -p results/class/$run
+  cp ~/Downloads/cluster/$run/{counts.json,history.json,qualitative_seed0.png} results/class/$run/
+  python scripts/export_class_model.py --checkpoint ~/Downloads/cluster/$run/checkpoints/best.pt       --output weights/class-$run.pt --half          # ~49 MB each; counts.json is picked up automatically
+done
+python scripts/app.py --checkpoint <click-model.pt> --class-checkpoint weights/class-bed_floor.pt  # look at it once
+git add results/class/bed weights/class-bed.pt && git commit -m "Add the one-class bed model: results, figure and float16 weights"
+git add results/class/bed_floor weights/class-bed_floor.pt && git commit -m "Add the two-class bed+floor model: results, figure and float16 weights"
+git push origin main
+scripts/publish_gitlab.sh <gitlab-url>
+```
+
+Decision baked into the README, change it if Kassem's GitLab objects: the
+float16 exports (~49 MB each, at most three files) are committed under
+`weights/`. `.gitignore` only excludes `results/**/*.pt`, so `weights/*.pt`
+is tracked. If the instance rejects them, use Git LFS or a Hugging Face model
+repo and point the README there instead. Note the `results/**/*.pt` rule means
+the training `best.pt` must NOT be copied into `results/class/`.
+
+**Step 5 run (after Kassem sees the two model commits):** command and class
+list are under "N-class run" below. Reporting to him: counts per class from
+`counts.json`, per-class test IoU from the log, the figure. Then
+`export_class_model.py --half` to `weights/class-top11.pt`, swap it into the
+website (`--class-checkpoint`), and commit as the final-submission model.
 
 **Kassem's thread (Discord, 2026-09-08 evening to 00:29).** One-class chair,
 bed, then bed+floor (2-channel) each landed the paper's per-class IoU; he said
@@ -636,20 +683,41 @@ His to-dos written at 00:28-00:29, verbatim order:
 - "if it's fine, try to add as many objects as possible (pick up all the
   objects that achieved above 70 accuracy in the paper), probably like 10 at
   least, not more than 20, you decide". Paper = arXiv 1608.05442 Fig. 9,
-  DilatedResNet-50 per-class IoU. Read so far from the chart: sky .93, pool
-  table .85, building .80, road .80, tent .78, bus .77, car .76, bed .76,
-  floor .75, person .70. Re-read the chart for the rest before fixing the list.
+  DilatedResNet-50 per-class IoU. **Chart read in full on 2026-09-11** (the
+  figure is `assets/figures/iou150_hist.png` in the ar5iv rendering; the
+  bars are sorted, so the order is the ranking): sky .93, pool table .85,
+  building .80, road .79, tent .78, ceiling .77, bus .77, car .76, bed .76,
+  floor .75, person .71 -- **11 classes above 0.70**; then tree .69, wall .69,
+  toilet .67, cradle .66, grass .65, runway .62, screen .61, fireplace .61,
+  bathtub .60, and chair .42 further down. Proposed list for the run: the 11
+  above 0.70, optionally plus wall and tree (0.69, and wall is in almost every
+  indoor image) for 13. ADE first-names match `--match exact` for all of them
+  ("pool table", "person", "building", "car", "bus", "road" are first terms).
 - "then retrain again, visualise the results and get back to me".
 - "if all good then put the model in your website and add the clicks where
   each click is a segmentation request".
 
-**Design point for the N-class run.** `train_class.py` accepts any number of
-names, but the FIRST name selects the images (bed -> bedroom images only).
-With sky / road / bus / car in the list, a bed anchor gives those channels
-almost no positives. Before the 10-20 class run, add an image-selection mode
-that takes every image containing ANY listed class (or all 27k images), keep
-per-class IoU scored only on images that contain the class, and expect a
-longer epoch (10x the images). One run, then the figure, then Kassem.
+**N-class run: built 2026-09-11, not yet trained.** `train_class.py --select
+any` selects every image containing at least one listed class (default
+`--select anchor` keeps the old behaviour, so chair/bed/bed+floor stay
+reproducible). Per-class IoU still scores a class only on images that contain
+it. Verified on synthetic data (`tests/make_synthetic_ade.py`) on CPU:
+index -> split -> train -> export -> ClassPredictor -> visualize_class all run
+with 4 mixed classes. With sky/person/wall in the list the selection is close
+to the whole 27k export, so expect ~10x the bed run's epoch time (roughly 4-5
+min/epoch on the L40S, a few hours total; one 12h job with `--auto-resume`).
+Cluster command, to run from the frontend:
+
+```bash
+qsub -v TRAIN_SCRIPT=scripts/train_class.py,EXTRA_ARGS="--class-name sky 'pool table' building road tent ceiling bus car bed floor person --select any" scripts/metacentrum/train.pbs
+```
+
+(check how train.pbs splits EXTRA_ARGS before trusting the quoted 'pool
+table'; if it word-splits, drop pool table or pass it via a wrapper). Output
+lands in `outputs/class/sky_pool_table_building_.../`; use `--output-dir
+outputs/class/top11` to keep the path short. Then `visualize_class.py` with
+the same `--class-name` list and `--output-dir`, then `export_class_model.py
+--half`, then Kassem.
 
 **Blocker unchanged:** Kassem has not sent the GitLab URL. Migration plan
 (`git-filter-repo` dropping `.claude/`, `CLAUDE.md`,
