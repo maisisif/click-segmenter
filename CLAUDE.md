@@ -697,8 +697,22 @@ His to-dos written at 00:28-00:29, verbatim order:
 - "if all good then put the model in your website and add the clicks where
   each click is a segmentation request".
 
-**N-class run STARTED 2026-09-11 (job submitted from Skirit ~10:00, output
-`outputs/class/top11/`).** The qsub line below was used verbatim, and the
+**N-class run: job 23603958, started 2026-09-11, output `outputs/class/top11/`,
+11 channels with `pool table` correct** (the first attempt, job 23603019 with
+the split names, was cancelled at epoch ~20 and its checkpoints removed).
+L40, ~250 s/epoch, early-stopping patience 20. Epoch 18 val IoU: sky .84,
+ceiling .71, bed .67, floor .67, road .61, building .53, car .52, person .40,
+**pool table / tent / bus .00** (rare classes collapse to empty under
+`--select any`; follow-up needs class-balanced sampling or a positive-weighted
+loss). When it finishes: `grep -E "TEST|Best val|Early" outputs/train.log`,
+`cat outputs/class/top11/counts.json`, then the figure with `--class-name sky
+pool_table building road tent ceiling bus car bed floor person --output-dir
+outputs/class/top11`, then `export_class_model.py --half` to
+`weights/class-top11.pt`, then the website `--class-checkpoint`, then Kassem.
+If the job is killed at walltime without an "Early stopping" line, resubmit
+the same qsub line; it resumes.
+
+History of the first attempt, kept for the record: The qsub line below was used verbatim, and the
 single quotes around 'pool table' did NOT survive `qsub -v`: the run has 12
 channels, `pool` (matches nothing, stays 0) and `table` (a real class) instead
 of `pool table`. Kept running rather than restarted (85 min in at the time,
