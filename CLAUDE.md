@@ -4,7 +4,7 @@ Read this file plus PROGRESS.md at the start of every session. This file holds
 the stable facts: what the project is, what has been built and measured, how to
 operate the infrastructure, and what remains.
 
-Last updated: 2026-09-08.
+Last updated: 2026-09-11 (last session on the work laptop; see Outstanding).
 
 ---
 
