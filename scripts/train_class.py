@@ -178,6 +178,14 @@ def main() -> None:
         "chooses the images (every image contains it), the others get a mask wherever they occur.",
     )
     parser.add_argument(
+        "--select",
+        default="anchor",
+        choices=["anchor", "any"],
+        help="Which images to train on. anchor: every image contains the FIRST class (the chair, bed "
+        "and bed+floor runs). any: every image that contains at least one listed class, for long "
+        "mixed lists (sky, road, bed, ...) where no single class anchors the scenes.",
+    )
+    parser.add_argument(
         "--match",
         default="exact",
         choices=["exact", "contains"],
@@ -259,15 +267,27 @@ def main() -> None:
             f"Scanned {t['images_scanned']} images in {time.time() - started:.0f}s: "
             f"{t['images_with_class']} contain a {name} ({t['instances']} instances), {t['images_without_class']} do not"
         )
-    index = indices[anchor]
+    if args.select == "any":
+        # Every image that contains at least one of the classes. With a long,
+        # mixed list (sky, road, bed, ...) an anchor would starve the classes
+        # that never share a scene with it; this keeps all of them fed. The
+        # per-class IoU still scores each class only on images that contain it.
+        index = {
+            p: [i for name in class_names for i in indices[name][p]]
+            for p in indices[anchor]
+        }
+        selector = " or ".join(class_names) if len(class_names) <= 4 else f"any of the {len(class_names)} classes"
+    else:
+        index = indices[anchor]
+        selector = anchor
     totals = summarize_index(index)
     if totals["images_with_class"] < 3:
-        raise SystemExit(f"Only {totals['images_with_class']} images contain {anchor!r}; nothing to train on")
+        raise SystemExit(f"Only {totals['images_with_class']} images contain {selector}; nothing to train on")
 
-    # Split BY IMAGE over the images that contain the anchor class, same seed
-    # and ratios as every other run, so the numbers are comparable. With one
-    # class an entry's ids are a flat list (unchanged); with several, one list
-    # per class, in --class-name order.
+    # Split BY IMAGE over the selected images, same seed and ratios as every
+    # other run, so the numbers are comparable. With one class an entry's ids
+    # are a flat list (unchanged); with several, one list per class, in
+    # --class-name order.
     positives = sorted(Path(p) for p, ids in index.items() if ids)
     splits = split_image_paths(positives, ratios=tuple(training["splits"]), seed=training["split_seed"])
 
@@ -278,7 +298,7 @@ def main() -> None:
 
     entries = {name: [(p, ids_for(p)) for p in paths] for name, paths in splits.items()}
 
-    counts = {"class_name": class_name, "class_names": class_names, "match": args.match, **totals, "splits": {}}
+    counts = {"class_name": class_name, "class_names": class_names, "match": args.match, "select": args.select, **totals, "splits": {}}
     if len(class_names) > 1:
         # Kassem: "make sure the new object exists in these bed images".
         counts["co_occurrence"] = {}
@@ -286,7 +306,7 @@ def main() -> None:
             with_it = sum(1 for p in positives if indices[name][str(p)])
             inst = sum(len(indices[name][str(p)]) for p in positives)
             counts["co_occurrence"][name] = {"images": with_it, "instances": inst}
-            print(f"  of the {len(positives)} {anchor} images, {with_it} also contain a {name} ({inst} instances)")
+            print(f"  of the {len(positives)} selected images ({selector}), {with_it} contain a {name} ({inst} instances)")
     for name, items in entries.items():
         per_class = [ClassSegmentationDataset.per_class_ids(ids) for _, ids in items]
         counts["splits"][name] = {
@@ -316,7 +336,7 @@ def main() -> None:
         empty = [] if len(class_names) == 1 else [[] for _ in class_names]
         entries["train"] += [(negatives[i], empty) for i in sorted(chosen)]
         counts["splits"]["train"]["negatives"] = take
-        print(f"  + {take} negative images (no {anchor}) added to train only")
+        print(f"  + {take} negative images (no {selector}) added to train only")
 
     with open(counts_path, "w") as f:
         json.dump(counts, f, indent=2)
@@ -404,6 +424,7 @@ def main() -> None:
                 "in_channels": 3,
                 "max_images": int(args.max_images or 0),
                 "negative_ratio": args.negative_ratio,
+                "select": args.select,
             },
         }
         if marker:
