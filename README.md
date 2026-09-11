@@ -122,6 +122,54 @@ should** — the model never sees its own previous mask, so click two is a fresh
 prediction rather than a correction. Multi-click accuracy (NoC), the field's
 standard metric, is not measured here.
 
+## Class segmentation models
+
+A second, simpler family of models sits beside the click tool: the same
+ResNet-34 U-Net, but with the photo alone as input and **one output mask per
+class** — plain semantic segmentation of a fixed set of ADE20K classes. It is
+the baseline the click model is compared against, and in the interface it
+backs the **Classes** tab (upload → every class; click a pixel → the class
+under it, shown everywhere in the image).
+
+Training uses only the images that contain the class (or, with `--select
+any`, any of the classes), split 70/20/10 by image. IoU is computed on the
+class alone, per image, and averaged; background is never scored. "Pooled"
+sums intersections and unions over the whole test split first.
+
+| Classes | Images with class (train/val/test) | Test IoU per image | Test IoU pooled | ADE20K paper, Fig. 9 |
+| --- | --- | --- | --- | --- |
+| chair | 2,745 of 12,003 (1,921 / 549 / 275) | 0.411 | 0.485 | 0.42 |
+| **bed** | 2,193 of 13,607 (1,535 / 439 / 219) | **0.735** | 0.759 | 0.76 |
+| **bed + floor** | full 27,574-image export (223 test images) | **0.749** (bed 0.720, floor 0.778) | 0.773 (bed 0.735, floor 0.811) | bed 0.76, floor 0.75 |
+
+The chair and bed runs land within 0.01 of the per-class IoU that the ADE20K
+paper (Zhou et al., arXiv 1608.05442, Fig. 9, DilatedResNet-50) reports for
+the same classes. The class, not the model, sets the ceiling: the classes the
+paper puts above 0.7 are sky, pool table, building, road, tent, ceiling, bus,
+car, bed, floor and person, and those are the candidates for a wider model.
+
+Qualitative figures for each run (image / output / ground truth / overlay on
+random test images) are in `results/class/<run>/`, next to the run's
+`counts.json` (image and instance counts per split, test numbers) and
+`history.json` (per-epoch curves).
+
+Exported weights for the class models are small enough to keep with the code,
+in `weights/` (float16, about 48 MB each). To serve one locally:
+
+```bash
+python scripts/app.py --checkpoint <click-model.pt> --class-checkpoint weights/class-bed_floor.pt
+```
+
+To train another class set (on a machine with the exported ADE20K data):
+
+```bash
+python scripts/train_class.py --class-name bed floor                  # anchored on bed images
+python scripts/train_class.py --class-name sky building road bed floor --select any
+python scripts/visualize_class.py --class-name bed floor              # qualitative figure
+python scripts/export_class_model.py --checkpoint outputs/class/bed_floor/checkpoints/best.pt \
+    --output weights/class-bed_floor.pt --half
+```
+
 ## Repository layout
 
 ```
