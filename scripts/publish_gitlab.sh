@@ -57,18 +57,19 @@ git clone --quiet --single-branch --branch main --no-local "$SRC" "$CLONE"
 
 # The words to remove are spelled from fragments so this file never contains
 # them literally in the published tree it also happens to be excluded from.
-A="Cla""ude"; B="Anth""ropic"; LOWER_A="$(printf '%s' "$A" | tr 'A-Z' 'a-z')"
+A="Cla""ude"; B="Anth""ropic"
+LOWER_A="$(printf '%s' "$A" | tr 'A-Z' 'a-z')"; UPPER_A="$(printf '%s' "$A" | tr 'a-z' 'A-Z')"
 TRAILER_RE="(?im)^co-authored-by: ${LOWER_A}[^\n]*\n?"
 
 REPLACE="$WORK/replace.txt"
-printf '%s==>%s\n' "${A^^}.md" "docs/TECHNICAL-RECORD.md" > "$REPLACE"
+printf '%s==>%s\n' "${UPPER_A}.md" "docs/TECHNICAL-RECORD.md" > "$REPLACE"
 
 echo "== rewriting history"
 (
     cd "$CLONE"
     "${FILTER[@]}" --force --quiet \
         --path .claude \
-        --path "${A^^}.md" \
+        --path "${UPPER_A}.md" \
         --path PROGRESS.md \
         --path segmentation-project-prompt.md \
         --path scripts/publish_gitlab.sh \
@@ -77,7 +78,7 @@ echo "== rewriting history"
         --message-callback "
 import re
 message = re.sub(rb'$TRAILER_RE', b'', message)
-return message.replace(b'${A^^}.md', b'docs/TECHNICAL-RECORD.md')" \
+return message.replace(b'${UPPER_A}.md', b'docs/TECHNICAL-RECORD.md')" \
         --name-callback "return b'$AUTHOR_NAME'" \
         --email-callback "return b'$AUTHOR_EMAIL'"
 )
