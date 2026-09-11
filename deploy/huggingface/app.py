@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from huggingface_hub import hf_hub_download
 
 from src.app.ui import THEME, build_ui
+from src.inference.class_predictor import ClassPredictor
 from src.inference.predictor import ClickPredictor
 
 DEFAULT_MODEL_REPO = "maisisif/click-segmenter"
@@ -62,15 +63,40 @@ def resolve_checkpoint() -> str:
     )
 
 
+def resolve_class_checkpoint() -> str | None:
+    """The optional class-segmentation weights for the Classes tab.
+
+    CLASS_MODEL_PATH names a local file; otherwise CLASS_MODEL_FILE names a
+    file in the same model repo. Neither set means no Classes tab, and the
+    interface is the click tool alone.
+    """
+    local = os.environ.get("CLASS_MODEL_PATH")
+    if local and Path(local).exists():
+        print(f"using local class checkpoint {local}")
+        return local
+    filename = os.environ.get("CLASS_MODEL_FILE")
+    if not filename:
+        return None
+    repo = os.environ.get("MODEL_REPO", DEFAULT_MODEL_REPO)
+    print(f"downloading {filename} from {repo}")
+    return hf_hub_download(repo_id=repo, filename=filename, token=os.environ.get("MODEL_TOKEN"))
+
+
 def main() -> None:
     # Always CPU: the free tier has no GPU, and asking for "auto" would only
     # make a failure here look like a device-detection problem.
     predictor = ClickPredictor(resolve_checkpoint(), device="cpu")
     print(f"loaded {predictor.arch['arch']} at {predictor.image_size}")
 
+    class_predictor = None
+    class_checkpoint = resolve_class_checkpoint()
+    if class_checkpoint:
+        class_predictor = ClassPredictor(class_checkpoint, device="cpu")
+        print(f"loaded class model for {class_predictor.class_names}")
+
     # No share tunnel and no explicit port: Spaces provides the public URL and
     # sets the port itself.
-    build_ui(predictor).launch(theme=THEME)
+    build_ui(predictor, class_predictor=class_predictor).launch(theme=THEME)
 
 
 if __name__ == "__main__":

@@ -75,18 +75,34 @@ training; it is not the checkpoint served here.
 """.strip()
 
 
-def home(num_masks: int) -> str:
+_CLASSES_HOME = """
+### The Classes tab
+
+Beside the click tool there is a second, simpler model: a U-Net that takes the
+photo alone and returns one mask per known class -- currently **{classes}**.
+No clicks are needed to get the masks; clicking is a *question* instead: click
+a pixel and it tells you which of its classes is there and shows that class
+everywhere in the image. It is the plain semantic-segmentation baseline the
+click model is compared against, trained on the same ADE20K images.
+""".strip()
+
+
+def home(num_masks: int, class_names: list[str] | None = None) -> str:
     """The Home page, describing the checkpoint that is actually loaded.
 
     How many masks the model outputs is a property of the served weights, not of
     the repository, so it is read from the model instead of written down. This
     is not hypothetical: the first checkpoint prepared for deployment returned
     one mask while this page promised three, which would have been the first
-    thing a visitor read.
+    thing a visitor read. The Classes paragraph appears only when a class
+    model is loaded, for the same reason.
     """
-    return _HOME_TEMPLATE.format(
+    text = _HOME_TEMPLATE.format(
         output_paragraph=_MULTI_MASK if num_masks > 1 else _SINGLE_MASK
     )
+    if class_names:
+        text += "\n\n" + _CLASSES_HOME.format(classes=", ".join(class_names))
+    return text
 
 
 HELP = """
@@ -142,3 +158,35 @@ Everything needed is in the project's README: installing the dependencies,
 downloading the trained weights, and starting this same interface locally. On a
 laptop with no GPU it works exactly as it does here, only without the cold start.
 """.strip()
+
+
+_CLASSES_HELP = """
+### The Classes tab
+
+1. Upload an image. Every known class ({classes}) is tinted in its own colour
+   straight away; the legend on the right gives the colours, the status box
+   gives each class's coverage and confidence.
+2. **Click a pixel to ask what is there.** The answer is the class the model
+   considers most likely at that pixel, and the view switches to that class's
+   mask alone, everywhere in the image. **Download clicked mask** gives that
+   mask as a PNG.
+3. If no class passes the threshold at the clicked pixel, the status says so
+   and names the nearest miss. **Show all classes** returns to the full view.
+4. **Class threshold** is the per-pixel confidence a class needs. Lower it for
+   patchy masks, raise it when a class bleeds into its surroundings.
+
+This model knows only the classes listed above. Anything else in the photo is
+background to it, which is exactly the difference from the Segment tab, where
+one click can pick out any object.
+""".strip()
+
+
+def classes_help(class_names: list[str]) -> str:
+    return _CLASSES_HELP.format(classes=", ".join(class_names))
+
+
+def help_page(class_names: list[str] | None = None) -> str:
+    """The Help page; the Classes section appears only when that model is loaded."""
+    if not class_names:
+        return HELP
+    return HELP + "\n\n" + classes_help(class_names)

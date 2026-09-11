@@ -32,10 +32,28 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.app.ui import EXCLUDE, INCLUDE, build_ui
+from src.app.ui import CLASSES_LABEL, EXCLUDE, INCLUDE, build_ui
+from src.inference.class_predictor import ClassPredictor
 from src.inference.predictor import ClickPredictor
 from src.model.build import build_model
 from scripts.export_model import build_payload
+
+
+def _tiny_class_checkpoint(directory: Path) -> Path:
+    """A training-style checkpoint of a small two-class RGB UNet."""
+    model = build_model({"arch": "unet", "base_channels": 8, "depth": 2, "in_channels": 3, "num_masks": 2})
+    path = directory / "tiny_class.pt"
+    torch.save(
+        {
+            "epoch": 3,
+            "best_epoch": 3,
+            "best_val_iou": 0.7,
+            "model_state_dict": model.state_dict(),
+            "train_settings": {"class_names": ["bed", "floor"], "image_size": [64, 64], "in_channels": 3},
+        },
+        path,
+    )
+    return path
 
 
 def _tiny_checkpoint(directory: Path) -> Path:
@@ -127,6 +145,41 @@ def main() -> None:
     view_high, _, _ = threshold.fn(photo, clicks, 0.95)
     assert view_low.shape == photo.shape and view_high.shape == photo.shape
     print("threshold re-renders without needing another click               ok")
+
+    # ---------------------------------------------------------- Classes tab
+
+    # Without a class model the interface must be exactly the click tool.
+    assert not any(name == CLASSES_LABEL for (name, _) in listeners), "Classes tab present without a class model"
+
+    with tempfile.TemporaryDirectory() as directory:
+        class_predictor = ClassPredictor(_tiny_class_checkpoint(Path(directory)), device="cpu")
+    demo = build_ui(predictor, class_predictor=class_predictor)
+    listeners = _listeners(demo)
+
+    upload = listeners[(CLASSES_LABEL, "upload")]
+    assert len(upload.inputs) == 2, f"classes upload declares {len(upload.inputs)} inputs"
+    original, view, download, status = upload.fn(photo, 0.5)
+    assert np.array_equal(original, photo) and view.shape == photo.shape
+    assert download is None and "bed" in status and "floor" in status
+    print("classes upload keeps the photo and tints every class              ok")
+
+    select = listeners[(CLASSES_LABEL, "select")]
+    assert len(select.inputs) == 3, f"classes select declares {len(select.inputs)} inputs"
+    event = gr.SelectData(target=None, data={"index": [140, 230], "value": None, "selected": True})
+    view2, original2, download2, status2 = select.fn(view, original, 0.0, event)
+    assert np.array_equal(original2, photo), "the tinted view overwrote the pristine copy"
+    assert view2.shape == photo.shape and download2 is not None
+    assert "(140, 230) is" in status2, status2
+    _, _, none_download, none_status = select.fn(view, original, 1.01, event)
+    assert none_download is None and none_status.startswith("No known class")
+    print("a click names the class under it, or says none passes             ok")
+
+    buttons = {name: fn for (name, event), fn in listeners.items() if event == "click"}
+    view3, download3, status3 = buttons["Show all classes"].fn(original, 0.5)
+    assert view3.shape == photo.shape and download3 is None and "\n" in status3
+    view4, _, _ = listeners[("Class threshold", "release")].fn(original, 0.9)
+    assert view4.shape == photo.shape
+    print("show-all and threshold re-render from the pristine copy           ok")
 
     print("\nall wiring tests passed")
 

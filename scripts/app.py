@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.app.ui import THEME, build_ui
+from src.inference.class_predictor import ClassPredictor
 from src.inference.predictor import ClickPredictor
 
 
@@ -36,6 +37,11 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--checkpoint", default="outputs/checkpoints/best.pt")
+    parser.add_argument(
+        "--class-checkpoint",
+        default=None,
+        help="Optional train_class.py / export_class_model.py checkpoint; adds the Classes tab",
+    )
     parser.add_argument("--train-config", default="configs/train.yaml")
     parser.add_argument("--clicks-config", default="configs/clicks.yaml")
     parser.add_argument("--device", default=None, choices=["auto", "cuda", "mps", "cpu"])
@@ -51,7 +57,12 @@ def main() -> None:
     )
     print(f"Loaded {args.checkpoint} on {predictor.device}")
 
-    build_ui(predictor).launch(
+    class_predictor = None
+    if args.class_checkpoint:
+        class_predictor = ClassPredictor(args.class_checkpoint, device=args.device)
+        print(f"Loaded class model {args.class_checkpoint}: {class_predictor.class_names}")
+
+    build_ui(predictor, class_predictor=class_predictor).launch(
         theme=THEME, share=args.share, server_port=args.port, server_name="0.0.0.0"
     )
 
