@@ -697,7 +697,21 @@ His to-dos written at 00:28-00:29, verbatim order:
 - "if all good then put the model in your website and add the clicks where
   each click is a segmentation request".
 
-**N-class run: built 2026-09-11, not yet trained.** `train_class.py --select
+**N-class run STARTED 2026-09-11 (job submitted from Skirit ~10:00, output
+`outputs/class/top11/`).** The qsub line below was used verbatim, and the
+single quotes around 'pool table' did NOT survive `qsub -v`: the run has 12
+channels, `pool` (matches nothing, stays 0) and `table` (a real class) instead
+of `pool table`. Kept running rather than restarted (85 min in at the time,
+264 s/epoch). Epoch 19 val: sky .86, ceiling .70, bed .66, floor .66, road
+.59, building .58, car .45, person .41, table .18, tent .00, bus .00, pool .00.
+Rare classes (tent, bus, and pool table would be too) collapse to empty under
+`--select any` because their channels see mostly negatives; a follow-up needs
+class-balanced sampling or a positive-weighted loss. Fix pushed the same day:
+class names accept underscores (`pool_table`), so no quoting is needed
+anymore. When reporting to Kassem: 10 intended classes + table, pool table
+dropped by the quoting error, rare classes at zero and why.
+
+Original note: **N-class run: built 2026-09-11.** `train_class.py --select
 any` selects every image containing at least one listed class (default
 `--select anchor` keeps the old behaviour, so chair/bed/bed+floor stay
 reproducible). Per-class IoU still scores a class only on images that contain
@@ -709,13 +723,11 @@ min/epoch on the L40S, a few hours total; one 12h job with `--auto-resume`).
 Cluster command, to run from the frontend:
 
 ```bash
-qsub -v TRAIN_SCRIPT=scripts/train_class.py,EXTRA_ARGS="--class-name sky 'pool table' building road tent ceiling bus car bed floor person --select any" scripts/metacentrum/train.pbs
+qsub -v TRAIN_SCRIPT=scripts/train_class.py,EXTRA_ARGS="--class-name sky pool_table building road tent ceiling bus car bed floor person --select any --output-dir outputs/class/top11" scripts/metacentrum/train.pbs
 ```
 
-(check how train.pbs splits EXTRA_ARGS before trusting the quoted 'pool
-table'; if it word-splits, drop pool table or pass it via a wrapper). Output
-lands in `outputs/class/sky_pool_table_building_.../`; use `--output-dir
-outputs/class/top11` to keep the path short. Then `visualize_class.py` with
+(underscores become spaces in class names, so `pool_table` is safe through
+`qsub -v`; quoting is not.) Then `visualize_class.py` with
 the same `--class-name` list and `--output-dir`, then `export_class_model.py
 --half`, then Kassem.
 

@@ -223,7 +223,7 @@ def main() -> None:
     num_workers = args.num_workers if args.num_workers is not None else training["num_workers"]
     image_size = tuple(train_config["data"]["image_size"])
     seed = train_config["seed"]
-    class_names = [c.strip().lower() for c in args.class_name]
+    class_names = [c.strip().lower().replace("_", " ") for c in args.class_name]  # pool_table -> "pool table": no shell quoting through qsub -v
     if len(set(class_names)) != len(class_names):
         raise SystemExit(f"duplicate class names: {class_names}")
     anchor = class_names[0]  # the class that selects the images

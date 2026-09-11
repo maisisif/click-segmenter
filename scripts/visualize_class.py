@@ -129,7 +129,7 @@ def main() -> None:
     parser.add_argument("--device", default=None, choices=["auto", "cuda", "mps", "cpu"])
     args = parser.parse_args()
 
-    class_names = [c.strip().lower() for c in args.class_name]
+    class_names = [c.strip().lower().replace("_", " ") for c in args.class_name]  # pool_table -> "pool table"
     label = "+".join(class_names)
     default_dir = Path("outputs") / "class" / "_".join(c.replace(" ", "_") for c in class_names)
     output_dir = Path(args.output_dir) if args.output_dir else default_dir
